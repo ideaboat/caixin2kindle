@@ -1,1 +1,4 @@
 .DS_Store
+
+# 原始快照含付费内容，永不入库（见 architecture.md §8 合规约定）
+testdata/raw/
