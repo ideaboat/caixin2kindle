@@ -10,6 +10,9 @@
 | 1.3 | C2/C3/C4 定案；spec 3.1 退出码同步 |
 | 1.4 | 按次轮审查修订（16 条）：单篇点击合计 50、归档游标、`--no-kindle` 重建、接口归属与类型 |
 | 1.4.1 | 图说归属降级为待快照复核；汇总 6 项待复核清单 |
+| 1.5 | 按第三轮审查修订（16 条）：新增中立端口包 `port`（修复跨包接口签名不兼容）、末页归档、最终成功判定、构建回环轮数、`app.Reporter`、登录恢复上限、增量语义澄清等 |
+
+> **引用约定**：正文中的"审查意见 N"指**第三轮**审查（本版本）；早期两轮的编号一律写作"意见(二) N"或 H/M/L 系列 ID。
 
 ---
 
@@ -63,16 +66,22 @@ caixin-download/
 ├── main.go                      # 唯一组装根：装配适配器 → app → cli，映射退出码
 ├── internal/
 │   ├── cli/                     # 表现层：参数、终端交互、日志、退出码
-│   │   ├── cli.go               # Run(args, deps) error
+│   │   ├── cli.go               # Run(args, deps) error；渲染 Result 到 stdout
 │   │   ├── flags.go             # 参数定义/校验/Usage（含"请勿操作自动化窗口"提示）
-│   │   ├── prompt.go            # 登录/验证码/设备提示，读取用户回车
-│   │   ├── log.go               # 进度日志“第 3/32 篇：<标题>”，stderr，统一脱敏
-│   │   └── exit.go              # 哨兵 error → 退出码 0-5
+│   │   ├── prompt.go            # 实现 port.Prompter（登录/验证码/设备提示，读回车）
+│   │   ├── reporter.go          # 实现 app.Reporter：进度行、告警、排查提示（stderr，脱敏）
+│   │   ├── log.go               # 日志底座：writer 注入、级别、计时
+│   │   └── exit.go              # 哨兵 error → 退出码 0-5（唯一映射点）
+│   ├── port/                    # 中立端口包：被多个消费方共享的接口（§5，审查意见 1）
+│   │   ├── page.go              # PageSource / Navigator（浏览器能力）
+│   │   ├── prompt.go            # Prompter（人机交互）
+│   │   └── text.go              # TextStore（正文文件读取）
 │   ├── app/                     # 应用层：用例编排（顺序与分支）
-│   │   ├── app.go               # Run(ctx, cfg) 主流程
+│   │   ├── app.go               # Run(ctx, cfg) (model.Result, error) 主流程
 │   │   ├── acquire.go           # 单篇获取 + 重试 + 登录失效恢复
-│   │   └── publish.go           # 重建判定 → EPUB → MOBI → Kindle 拷贝
-│   ├── service/                 # 业务层：纯逻辑，只依赖 model/config/selector 与消费方接口
+│   │   ├── publish.go           # 构建前复核循环 → EPUB → MOBI → Kindle 拷贝
+│   │   └── report.go            # 消费方接口 Reporter；model.Result 由 model 定义
+│   ├── service/                 # 业务层：纯逻辑，只依赖 model/config/selector/port
 │   │   ├── issue/               # 期号与文章列表
 │   │   │   ├── parse.go         # 给定 issue 页 HTML → 期号 + 文章列表 + 去重
 │   │   │   ├── period.go        # “第 N 期”匹配与目录名 sanitize
@@ -88,18 +97,21 @@ caixin-download/
 │   │   ├── kindle/              # 设备定位纯规则
 │   │   │   └── rule.go          # 候选卷排序/筛选 + 是否需要创建 documents/ 的判定
 │   │   └── state/               # 进度判定（纯函数）
-│   │       ├── decide.go        # 待抓列表、是否重建（H6）
+│   │       ├── decide.go        # 待抓列表、是否重建（H6）、构建前复核
 │   │       └── hash.go          # 正文纯文本哈希
 │   ├── model/                   # 领域数据与哨兵错误，无行为、无依赖
 │   │   ├── issue.go             # Issue / Article
 │   │   ├── page.go              # PageAction / ActionKind / Step / NavProgress
 │   │   ├── text.go              # ArticleText / Status
 │   │   ├── state.go             # State / ArticleState / Artifact
+│   │   ├── external.go          # MissingDep / Volume / ConvertPlan
+│   │   ├── result.go            # Result（app.Run 的返回值，供 cli 渲染）
 │   │   └── errors.go            # ErrUsage / ErrDependency / ErrLogin / ErrFetch / ErrConvert / ErrCopy
 │   ├── selector/                # 中立包：selector 纯数据表，service 与 adapter 共享（spec 3.5-2）
 │   │   ├── selector.go          # SelectorSet 结构与默认表
 │   │   ├── issue.go             # 列表容器、文章链接、期号文案
-│   │   └── article.go           # 标题/作者/正文/余下全文/下一页/页脚/付费提示
+│   │   ├── article.go           # 标题/作者/正文/余下全文/下一页/页脚/付费提示
+│   │   └── login.go             # 登录页表单、验证码元素（审查意见 11：一并集中）
 │   ├── config/                  # 配置外置：默认值、解析、校验（[WARN] §9.1）
 │   │   └── config.go
 │   ├── wire/                    # 装配辅助：构造各部件 + 集中编译期接口断言（§9.1 W7）
@@ -110,12 +122,11 @@ caixin-download/
 │   │   │   ├── navigate.go      # 导航、滚动、点击、等待网络空闲/元素可见
 │   │   │   ├── execute.go       # PageAction → chromedp 动作；点击后登出检测（M10）
 │   │   │   ├── login.go         # 打开浏览器、登录/验证码探测与提示桥接
-│   │   │   ├── prompt.go        # 消费方接口 Prompter（由 cli/prompt 隐式实现）
-│   │   │   └── checks.go        # 登录页/验证码的 DOM 特征（adapter 私有，不进 selector 表）
+│   │   │   └── checks.go        # 登录页/验证码的判定逻辑（selector 取自 internal/selector）
 │   │   ├── storage/             # 文件与状态
-│   │   │   ├── workspace.go     # 输出目录布局、创建、路径规范化
+│   │   │   ├── workspace.go     # 输出目录布局、创建、路径规范化、--full 清理
 │   │   │   ├── statestore.go    # state.json 原子读写（唯一进度来源）
-│   │   │   └── articletext.go   # articles/ 纯文本读写
+│   │   │   └── articletext.go   # articles/ 纯文本读写（实现 port.TextStore）
 │   │   ├── publish/             # 外部发布能力
 │   │   │   ├── calibre.go       # 执行 ebook-convert + 退出码/错误分类（非零 → ErrConvert）
 │   │   │   ├── kindle_usb.go    # /Volumes 扫描（只读）、documents/ 创建、复制
@@ -123,24 +134,28 @@ caixin-download/
 │   │   └── clock/               # 时钟与随机等待的实现（可 fake）
 │   │       └── waiter.go
 │   └── testutil/                # 测试支撑
-│       ├── fakebrowser.go       # 按脚本回放快照的 Navigator/PageSource/LoginHandler
+│       ├── fakebrowser.go       # 按脚本回放快照的 port.Navigator / port.PageSource
 │       ├── fakeconv.go          # Converter / VolumeScanner / DeviceWriter / Waiter / Clock
+│       ├── fakereporter.go      # 记录进度行，供日志断言（L2）
 │       └── goldens/             # 期望产物
-└── testdata/                    # 三类样例页面 HTML 快照（issue / 余下全文 / 下一页）
+├── testdata/                    # 三类样例页面快照（issue / 余下全文 / 下一页），见 §8 合规约定
+└── .gitignore                   # 忽略 testdata 原始快照，仅提交脱敏最小片段（审查意见 14）
 ```
 
 **依赖方向**（编译期强制，无环）：
 
 | 包 | 允许导入 |
 |---|---|
-| `cli` | `app`, `config`, `model`（不得碰 adapter、不得碰浏览器/磁盘） |
-| `app` | `service/*`, `model`, `config` |
-| `service/*` | `model`, `config`, `selector`, 自身消费方接口 |
-| `adapter/*` | `model`, `config`, `selector`, 第三方库（**不得**反向导入 `service`、`app`、`cli`） |
+| `cli` | `app`, `port`, `config`, `model`（不得碰 adapter、不得碰浏览器/磁盘） |
+| `app` | `service/*`, `port`, `model`, `config` |
+| `service/*` | `model`, `config`, `selector`, `port` |
+| `port` | `model`（**中立端口包**：被多个消费方共享的接口，见 §5） |
+| `selector` | 无（纯数据表） |
+| `adapter/*` | `model`, `config`, `selector`, `port`（**不得**反向导入 `service`、`app`、`cli`） |
 | `main.go` | 全部（唯一装配点；编译期断言集中在 `internal/wire`，`main.go` 只调用） |
 
-> 反向实现靠 Go 隐式接口：`page.Client` 方法签名满足 `service/article.Navigator`，`adapter` 无需 import `service`，依赖箭头不倒流。
-> `selector` 是**无依赖的纯数据包**（选项：① 纯数据中立包，已采用；② `PageAction` 只带 `ActionKind`、由 `adapter` 执行时查表填 selector）。选 ① 的原因：`service` 的解析需要读按钮/容器锚点，spec 3.5-2 又要求 selector 只有一处定义，中立包同时满足两者，且不引入"同一语义两处定义"的漂移风险。
+> **为什么需要 `port`（审查意见 1，阻断项）**：Go 接口匹配要求方法签名**完全一致**。若 `app.IssueLocator.Locate` 的形参是 `app.PageSource`，而实现方在 `service/issue`，则 `service` 必须 import `app`——被依赖表禁止，编译期断言必然失败。把这类**被多个消费方共享**的接口（`PageSource`/`Navigator`/`Prompter`/`TextStore`）放进无依赖的中立包 `port`，`app`、`service`、`adapter`、`cli` 各自引用同一份定义，签名自然一致。
+> 判定规则：**接口的消费方只有一个包时，仍定义在该包内**（如 `app.Reporter`、`app.StateRepository`）；**被两个及以上包消费时，下沉到 `port`**。`selector` 同理是中立包，但只放数据不放行为。
 
 ---
 
@@ -242,18 +257,48 @@ func (t ArticleText) Body() string // 段落以空行连接，供哈希与落盘
 
 ## 5. 模块契约
 
-接口**全部定义在消费方包**，跨包参数只用 `model` 类型或消费方自定义接口（不得出现 `adapter` 的具体类型）。下表即接口清单与归属。
+接口**定义在消费方包**；当同一接口被两个及以上包消费时，下沉到中立包 `port`（审查意见 1）。跨包参数只用 `model` 类型或 `port` 接口，不得出现 `adapter` 的具体类型。
+
+**中立包 `internal/port`（被共享的接口，唯一定义处）**
+
+```go
+// port/page.go
+type PageSource interface {
+    Navigate(ctx context.Context, url string) error
+    HTML(ctx context.Context) (string, error)
+    ScrollToBottom(ctx context.Context) error
+    WaitNetworkIdle(ctx context.Context) error
+    WaitVisible(ctx context.Context, selector string) error
+    LogoutDetected(ctx context.Context) (bool, error)
+}
+
+type Navigator interface {
+    PageSource // 嵌入，保证两个消费方看到的子集一致
+    Execute(ctx context.Context, action model.PageAction) error
+}
+
+// port/prompt.go
+type Prompter interface {
+    WaitForLogin(ctx context.Context) error
+    WaitForCaptcha(ctx context.Context) error
+}
+
+// port/text.go
+type TextStore interface {
+    Exists(path string) (bool, error)
+    ReadArticleText(path string) (string, error)
+}
+```
 
 | 消费方包 | 接口 | 方法签名要点 | 由谁实现 |
 |---|---|---|---|
 | `cli` | `DependencyChecker` | `Check(ctx) []model.MissingDep` | `adapter/publish` |
-| `cli` | `AppRunner` | `Run(ctx, cfg config.Config) error` | `app` |
+| `cli` | `AppRunner` | `Run(ctx, cfg config.Config) (model.Result, error)` | `app` |
 | `app` | `BrowserOpener` | `Open(ctx, cfg config.Config) error` | `adapter/page` |
 | `app` | `LoginHandler` | `EnsureReady(ctx) error`（登录/验证码已就绪；不含启动） | `adapter/page` |
-| `app` | `IssueLocator` | `Locate(ctx, page PageSource, url string) (model.Issue, error)` | `service/issue` |
-| `app` | `PageSource` | `Navigate`、`HTML`、`ScrollToBottom`、`WaitNetworkIdle`、`WaitVisible` | `adapter/page` |
-| `app` | `ArticleFetcher` | `Fetch(ctx, nav Navigator, art model.Article) (model.ArticleText, error)` | `service/article` |
-| `app` | `Navigator` | `Navigate`、`HTML`、`Execute(model.PageAction)`、`LogoutDetected` | `adapter/page` |
+| `app` | `Reporter` | `Progress(done, total int, title string)`；`Warn(msg string)`；`Hint(msg string)`（审查意见 5） | `cli/reporter.go` |
+| `app` | `IssueLocator` | `Locate(ctx, page port.PageSource, url string) (model.Issue, error)` | `service/issue` |
+| `app` | `ArticleFetcher` | `Fetch(ctx, nav port.Navigator, art model.Article) (model.ArticleText, error)` | `service/article` |
 | `app` | `Waiter` | `BetweenArticles(ctx)`（篇间等待，编排层职责） | `adapter/clock` |
 | `app` | `StateRepository` | `Load(ctx, dir) (model.State, error)`；`Save(ctx, dir, s model.State) error` | `adapter/storage` |
 | `app` | `ArtifactStore` | `WriteArticleText`、`ReadArticleText`、`Exists`、`WriteEPUB(name, data)`、`Path` | `adapter/storage` |
@@ -261,21 +306,23 @@ func (t ArticleText) Body() string // 段落以空行连接，供哈希与落盘
 | `app` | `Converter` | `ToMOBI(ctx, plan model.ConvertPlan) error` | `adapter/publish`（calibre） |
 | `app` | `VolumeScanner` | `Volumes(ctx) ([]model.Volume, error)`（只读枚举 `/Volumes/*` 及其 `documents/`） | `adapter/publish` |
 | `app` | `DeviceWriter` | `EnsureDocuments(ctx, v model.Volume) error`；`Copy(ctx, v model.Volume, src, name string) error` | `adapter/publish` |
-| `app` | `KindleSelector` | `Select(mount string, vols []model.Volume) (model.Volume, bool, error)`（纯规则） | `service/kindle` |
-| `service/issue` | `PageSource` | 同 `app.PageSource`（两个消费方各自声明所需子集） | `adapter/page` |
-| `service/article` | `Navigator` | 同 `app.Navigator` | `adapter/page` |
+| `app` | `KindleSelector` | `Select(req model.KindleRequest, vols []model.Volume) (model.Volume, bool, error)`（纯规则，含"指定但不存在"判定） | `service/kindle` |
+| `port` | `PageSource` / `Navigator` | 见上 | `adapter/page` |
+| `port` | `Prompter` | 见上（`adapter/page` 消费，`cli/prompt` 实现） | `cli/prompt.go` |
+| `port` | `TextStore` | 见上（`service/state` 消费，`adapter/storage` 实现） | `adapter/storage` |
 | `service/article` | `ClickWaiter` | `BetweenClicks(ctx)`（篇内点击间等待） | `adapter/clock` |
-| `adapter/page` | `Prompter` | `WaitForLogin(ctx)`、`WaitForCaptcha(ctx)`（由 adapter 自身消费） | `cli/prompt` |
 
-`model` 中新增的跨包类型（避免 `app` 导入 `adapter`）：`MissingDep{Name, Hint string}`、`Volume{Path string, HasDocuments bool, Writable bool}`、`ConvertPlan{InputPath, OutputPath, OutputProfile string; Args []string}`。
+`model` 中新增的跨包类型（避免 `app`/`service` 导入 `adapter`）：`MissingDep{Name, Hint string}`、`Volume{Path string, HasDocuments, Writable bool}`、`KindleRequest{Mount string, Explicit bool}`、`ConvertPlan{InputPath, OutputPath, OutputProfile string; Args []string}`、`Result{OutputDir, EPUBPath, MOBIPath string; KindleCopied bool; Skipped bool}`。
+
+**接口归属判定规则（审查意见 1）**：消费方唯一 → 定义在该包（`app.Reporter`、`app.StateRepository`、`service/article.ClickWaiter`）；被两个及以上包消费 → 下沉 `port`（浏览器能力被 `app` 与 `service/*` 同时消费）。这既保留"接口由消费方定义"的实质（形状由使用方决定），又满足 Go 的签名完全一致要求。
 
 约定：
 - 所有方法首参 `context.Context`，由 `cli` 建立根 context（链路超时来自 `config`），库内不得新建 `context.Background()`。
 - 返回结构化错误而非日志：`model.ErrUsage/ErrDependency/ErrLogin/ErrFetch/ErrConvert/ErrCopy` 用 `%w` 包装，`cli/exit.go` 用 `errors.Is` 映射退出码（**唯一映射点**，见 §6.1）。
-- nil receiver / 未检测到设备等"正常但空"的结果用 `(T, bool)` 表达，不用 error；只有 `--kindle` 指定的挂载点创建/写入失败才用 error。
+- nil receiver / 未检测到设备等"正常但空"的结果用 `(T, bool)` 表达，不用 error；只有显式指定的挂载点不存在或写入失败才用 error。
 - 跨包传递只读结构体（`model.*`）；`app` 的进度状态是本地值，每篇后整体落盘。
-- 日志统一走 `cli/log.go`（**stderr**，`Warn/Info/Error` 三级 + 计时），`stdout` 只留给 `Prompter` 的必要交互与最终产物路径汇总（M12）。
-- 服务层不落盘、不起进程：`EPUBBuilder` 返回字节、`service/ebook.Command` 只产出参数，写文件与执行分别由 `ArtifactStore`、`Converter` 完成。
+- 日志与输出分离（审查意见 5）：`app` 只调 `Reporter`（进度、告警、排查提示 → **stderr**）；`cli` 拿 `model.Result` 渲染 stdout 的最终产物路径。`app` 不导入 `cli`，由 `main.go` 注入 `cli.Reporter`。
+- 服务层不落盘、不起进程：`EPUBBuilder` 返回字节、`service/ebook.Command` 只产出参数；写文件与执行分别由 `ArtifactStore`、`Converter` 完成。`service/state` 复核正文只经 `port.TextStore`。
 
 ---
 
@@ -285,8 +332,8 @@ func (t ArticleText) Body() string // 段落以空行连接，供哈希与落盘
 
 ```
 0. cli 解析参数 → config.Load(默认值) → config.Validate
-   （URL 非法 / --delay 非法 → ErrUsage → 退出 1，日志明确标注“参数错误”以区别依赖缺失，见 §9.3）
-1. cli 调 DependencyChecker：缺 Chrome / ebook-convert → 打印安装提示，退出 1
+   （URL 非法 / --delay 非法 → ErrUsage → 退出 1，日志首行标注“参数错误”以区别依赖缺失，见 §9.3）
+1. cli 调 DependencyChecker：缺 Chrome / ebook-convert → 报告器打印安装提示，退出 1
 2. app 调 BrowserOpener.Open（有头 + 持久化 profile）；profile 被占用 → 退出 1
 3. app 调 LoginHandler.EnsureReady（首轮登录/验证码）→ IssueLocator.Locate：
    Navigate(issueURL) → 滚动至列表稳定（连续两次滚动数量不增）
@@ -294,18 +341,17 @@ func (t ArticleText) Body() string // 段落以空行连接，供哈希与落盘
 4. 工作区创建：<out>/<Issue.DirName>/{,.caixin2kindle/,articles/}
    （期号未知前不建目录；此步只依赖 Locate 的产物）
 5. state.Decide：读取该目录 state.json，产出待抓列表
-   （success 且正文文件存在、hash 未变 → 跳过）
+   （success 且正文文件存在、hash 未变 → 跳过；语义见 §7 审查意见 7）
 6. 抓取循环：对每篇 ArticleFetcher.Fetch（见 6.2），
-   先写正文并 fsync，再原子写 state（顺序见 §7 审查意见 16）；
-   每篇后 Save(state)（崩溃可从断点续跑，且不依赖文件计数）
+   先写正文并 fsync，再原子写 state（顺序见 §7）；
+   每篇后 Reporter.Progress(完成数, 去重后总数, 标题) 并 Save(state)
 7. 连续 3 篇失败 → ErrFetch，退出 3
-8. 产物循环（见 §7「构建前复核」）：
-   a. 重建判定：不满足“可跳过”条件 → EPUBBuilder.Build → ArtifactStore.WriteEPUB → Converter.ToMOBI
-   b. 若正文复核发现损坏/缺失 → 回步骤 6 只重抓这些篇（上限 2 轮），随后回到 a
-   c. 仍不合格 → ErrFetch，退出 3
+8. 构建前复核循环 + 产物生成（见 §7「构建前复核的流程回环」）
 9. 未指定 --no-kindle → VolumeScanner + KindleSelector 定位设备；
    命中 → EnsureDocuments（必要时创建）→ 覆盖同名文件拷贝（失败退出 5）；
-   未命中 → 提示路径，退出 0（EPUB/MOBI 仍在步骤 8 产出，见审查意见 5）
+   未命中 → 报告器提示路径，退出 0（EPUB/MOBI 仍在步骤 8 产出）
+10. app 返回 model.Result{OutputDir, EPUBPath, MOBIPath, KindleCopied, Skipped}
+    → cli 渲染到 stdout（app 不导入 cli，见 §5 审查意见 5）
 ```
 
 **登录/验证码的职责边界（M1）**：DOM 探测与终端交互归 `adapter/page`（它看得见 DOM），编排与恢复归 `app`。
@@ -314,11 +360,11 @@ func (t ArticleText) Body() string // 段落以空行连接，供哈希与落盘
 |---|---|---|
 | 打开浏览器 | `app` 调 `BrowserOpener.Open` | 启动 Chrome（有头/无头、持久化 profile、SingletonLock 检查） |
 | 首轮认证 | `app` 调 `LoginHandler.EnsureReady` | 探测登录页/验证码 → 经 `Prompter` 提示 → 轮询等待列表元素就绪（带超时） |
-| 提示渲染 | `cli/prompt` 实现 `adapter/page.Prompter` | 接口定义在 `adapter/page`（消费方），`cli` 只提供实现并注入 → `adapter` 不导入 `cli`（审查意见 6） |
+| 提示渲染 | `cli/prompt` 实现 `port.Prompter` | 接口定义在中立包 `port`（被 `adapter/page` 消费），`cli` 只提供实现并注入 → `adapter` 不导入 `cli`（意见(二) 6） |
 | issue 页解析 | `app` 调 `IssueLocator.Locate` | 纯解析：只读已就绪页面的 HTML，不感知登录 |
 | 运行中被登出（4.4） | `adapter/page` 返回 `model.ErrLogin`，`app` 捕获 | `Navigate` 与每次 `Execute` 之后都探测登出（M10）→ 回到 `EnsureReady` |
 | 超时 | `app` 负责整体上限，`adapter` 负责单次等待上限 | 任一层超时 ⇒ `ErrLogin` ⇒ 退出 2 |
-| 退出码映射 | `cli/exit.go` 是**唯一**映射点；`main.go` 只调用 `cli.ExitCode(err)` | 避免两处各自映射导致漂移（审查意见 14） |
+| 退出码映射 | `cli/exit.go` 是**唯一**映射点；`main.go` 只调用 `cli.ExitCode(err)` | 避免两处各自映射导致漂移（意见(二) 14） |
 
 `--headless` 时（M6）：`EnsureReady` 检测到登录页或验证码**立即**返回 `ErrLogin`，不轮询、不等待人工操作，日志提示“无头模式无法人工介入，请去掉 --headless 后重试”，退出 2。
 
@@ -358,17 +404,22 @@ func (t ArticleText) Body() string // 段落以空行连接，供哈希与落盘
         LastArchivedPage = PageIndex
         if verify.Complete(extract.Body(pageHTML)) → 跳出   // 该页即全文结尾
         重新快照 pageHTML                                // 步骤②：此后 pageHTML 才是下一页
-        if Plan(pageHTML) 已无任何动作 → 跳出             // 末页结束
-        PageIndex++
+        PageIndex++                                      // 步骤③：先推进页码（审查意见 2）
+        if Plan(pageHTML) 已无任何动作 → 跳出             // 末页结束；步骤 4 依据新页码归档
       action.Kind == ActionExpandFullText：
         ClicksOnArticle++；重新快照 pageHTML              // 原地展开，不换页、不归档
 4. 收尾归档（无条件执行，覆盖早退 / done / 末页三种出口）：
    if PageIndex > LastArchivedPage → accumulate.Append(extract.Body(pageHTML))
 5. extract.Title/Author 仅从 PageIndex == 1 的快照取一次
-6. 返回 ArticleText{Order, Title, Author, Paragraphs}
+6. **最终强制成功判定（审查意见 3）**：
+   body := accumulate.Body()
+   if !verify.Complete(body) → 返回 ErrFetch 并附原因
+       （未检出文末特征符号 / 检出付费提示或未展开预览文案）
+   → 该篇记 fail，走 §6.3 重试，**不得写 success**
+7. 返回 ArticleText{Order, Title, Author, Paragraphs}
 ```
 
-**归档规则（消除"丢第一页 / 丢展开后正文"两类隐患）**：用 `LastArchivedPage` 记录已归档到第几页，**归档与快照的先后顺序写死在步骤 3f**——先归档当前 `pageHTML`（此时仍是原页终态），再重新快照。每一页的终态内容恰好在"离开该页"时被追加一次；步骤 4 覆盖所有出口，保证最后一页不会漏。
+**归档规则（消除"丢第一页 / 丢展开后正文 / 丢末页"三类隐患）**：用 `LastArchivedPage` 记录已归档到第几页，**归档与快照的先后顺序写死在步骤 3f**——先归档当前 `pageHTML`（此时仍是原页终态），再重新快照，**然后立即推进 `PageIndex`**。页码推进必须在"判断末页"之前完成，否则末页因页码未变而被步骤 4 跳过。每一页的终态内容恰好在"离开该页"时被追加一次；步骤 4 覆盖所有出口，保证最后一页不会漏。
 
 **为什么这样能保证不重不漏（H5）**：
 
@@ -377,7 +428,8 @@ func (t ArticleText) Body() string // 段落以空行连接，供哈希与落盘
 | 点击"下一页"后第一页正文丢失 | 步骤 3f **先归档、后重新快照**：归档的 `pageHTML` 仍是原页终态，快照更新发生在其后 |
 | 原地展开的中间态被反复拼接 | 展开动作不换页、不推进 `LastArchivedPage`，只替换 `pageHTML`；同一页只会在离开时归档一次 |
 | "余下全文"单击即完整时正文丢失 | 早退出口同样经过步骤 4 的归档（3a→4；`PageIndex > LastArchivedPage` 成立，故会归档） |
-| 末页正文丢失 | 3f 的"下一页之后无动作 → 跳出"与 `done` 出口都经步骤 4 归档 |
+| 末页正文丢失 | 3f 在判断末页**之前**先 `PageIndex++`（审查意见 2），因此步骤 4 的 `PageIndex > LastArchivedPage` 成立；`done` 出口同样经步骤 4 归档 |
+| 把不完整正文当成功 | 步骤 6 对 `accumulate` 后的**最终正文**强制 `verify.Complete`；未命中即 `ErrFetch`，绝不写 success（审查意见 3） |
 | 同一页被归档两次 | 归档后立即置 `LastArchivedPage = PageIndex`，步骤 4 只归档"尚未归档的当前页"；`accumulate` 的段落级去重是第二道保险 |
 | 误在已完整的正文上继续点击 | 步骤 3a 每轮先做完成判定，命中即结束 |
 | 段落级重复（页脚、连载重复段） | `accumulate` 对段落归一化（折叠空白、去首尾）后哈希去重，保持首次出现顺序，重复归档也不会产生重复段落 |
@@ -391,12 +443,26 @@ func (t ArticleText) Body() string // 段落以空行连接，供哈希与落盘
 ### 6.3 重试与中断（`app/acquire.go`）
 
 ```
-attempt 1..3：
+attempt 1..3：                                    // ArticleRetryLimit = 3
   失败 → 记录 → 若 attempt < 3 则固定退避 2s、4s 后重试
-  若错误是 ErrLogin → 不计入重试次数，直接进入登录恢复流程（恢复成功后重试当前篇）
+  若错误是 ErrLogin → 不计入文章重试次数，转登录恢复（见下）
 任一篇成功后连续失败计数归零；连续 3 篇最终失败 → 停止并输出排查提示
 （登录态是否失效 / 网络是否正常 / 页面结构是否变更）
+
+登录恢复（审查意见 6，必须有上限）：
+  for recovery in 1..LoginRecoveryLimit (默认 3):
+      Reporter.Hint("请在浏览器中完成登录/验证后按回车")
+      err := loginHandler.EnsureReady(ctx)
+      if err == nil 且 当前篇重试成功 → 恢复计数清零，继续
+  recovery 用尽仍失败 → 返回 ErrLogin，退出 2
+  // 人工确认本身无超时（§9.2），但"恢复后再次失效"的自动循环必须有界
 ```
+
+**构建前回抓与熔断的关系（审查意见 12）**：构建阶段的回抓（§7 回环）**复用同一套单篇策略**（最多 3 次尝试、固定退避、`ErrLogin` 不计次），但：
+
+- **连续失败计数在进入构建回环时重置**，不跨轮与抓取阶段累加（否则前面已成功的抓取会让计数含义混乱）；
+- 若某轮回抓后连续 3 篇仍失败 → 直接 `ErrFetch` 退出 3，不再继续轮次；
+- 回环总轮数由 `BuildRetryRounds` 限定（默认 2 次回抓），最终仍不合格 → `ErrFetch` 退出 3。
 
 ---
 
@@ -404,39 +470,46 @@ attempt 1..3：
 
 | 需求 | 设计 | 落点 |
 |---|---|---|
-| 增量（4.1） | 唯一进度依据 `state.json`；success **且** `text_path` 存在 **且** 内容哈希匹配才跳过；哈希对**提取后正文**计算 | `service/state/decide.go`、`adapter/storage/*` |
-| 正文文件校验（M2） | `Decide` 阶段做存在性/可读性检查（保持快）；**构建 EPUB 前**逐篇重读并复核哈希，不符即回到抓取阶段重抓（流程回环见 §6.1 步骤 8，审查意见 12），绝不用损坏正文生成 EPUB | `service/state/decide.go`、`app/publish.go` |
+| 增量（4.1 + 审查意见 7） | 唯一进度依据 `state.json`；success **且** `text_path` 存在 **且** 本地正文哈希与 state 记录一致才跳过。**语义边界**：这只证明"本地正文文件未被改动"，**不检测财新网页是否更新**——重跑不联网比对，也就不可能发现线上内容变化。怀疑线上有更新时用 `--full`。该语义写入 `--help` 与 spec 4.1 | `service/state/decide.go`、`adapter/storage/*`、`cli/flags.go` |
+| 正文文件校验（M2） | `Decide` 阶段做存在性/可读性检查（保持快）；**构建 EPUB 前**逐篇重读并复核哈希，不符即回到抓取阶段重抓（流程回环见下），绝不用损坏正文生成 EPUB | `service/state/decide.go`、`app/publish.go` |
 | 状态写盘（M2） | 临时文件 + `fsync` + `rename` + 目录 `fsync`；解码失败或 schema 不匹配 → 全量并告警 | `adapter/storage/statestore.go` |
 | 写入顺序（审查意见 16） | 单篇成功时**先写 `articles/*.txt` 并 fsync，再原子写 state**；顺序反了会在崩溃后出现"state 说 success、正文缺失" | `app/acquire.go`、`adapter/storage/*` |
 | 期号隔离（4.1） | 输出目录按期号命名，state 与产物同目录，天然隔离 | `adapter/storage/workspace.go` |
 | 重建判定（4.1，修订 H6 + 审查意见 5） | 仅当 **① 全部文章 success ② `artifacts.built_issue_id == Issue.ID` ③ EPUB 与 MOBI 均存在** 三者同时成立才跳过。`--no-kindle` **不参与**该判定：该模式仍须产出 EPUB + MOBI，只是不拷贝（spec 2/3.9），原条件"`--no-kindle` 时只查 EPUB"是错的 | `service/state/decide.go` |
-| `--full`（4.2 + 审查意见 17） | 删除 `.caixin2kindle/state.json` 与 `articles/*.txt`、旧的 `<期号>.epub`/`.mobi`（**只删本工具在 `<输出目录>` 内生成的已知产物，不做目录级 `RemoveAll`**），然后按全量待抓列表执行 | `app/app.go`、`adapter/storage/workspace.go` |
-| 失败重试（4.3） | 单篇最多 3 次尝试，固定退避 2s/4s；`ErrLogin` 不计入尝试次数 | `app/acquire.go` |
-| 连败熔断（4.3） | 连续 3 篇失败即停，附排查提示 | `app/acquire.go` |
+| `--full`（4.2 + 审查意见 17/15） | 删除 `.caixin2kindle/state.json` 与 `articles/*.txt`、旧的 `<期号>.epub`/`.mobi`（**只删本工具在 `<输出目录>` 内生成的已知产物，不做目录级 `RemoveAll`**），然后按全量待抓列表执行。**删除失败**（权限/占用）→ 不静默继续：`ErrUsage` 退出 1，并提示需手动清理的路径 | `app/app.go`、`adapter/storage/workspace.go` |
+| profile 锁（3.1 + 审查意见 15） | 启动时若发现 `SingletonLock`：先判断锁文件中的 PID/主机名是否有对应活进程（`kill -0` 语义）。**真被占用** → 退出 1；**陈旧锁**（无对应进程）→ 告警后清理该锁文件再继续，不要求用户手工处理 | `adapter/page/open.go` |
+| 失败重试（4.3） | 单篇最多 3 次尝试（`ArticleRetryLimit`），固定退避 2s/4s；`ErrLogin` 不计入尝试次数 | `app/acquire.go` |
+| 登录恢复上限（审查意见 6） | `LoginRecoveryLimit`（默认 3）限制"恢复→再失效"的自动循环；用尽仍失败 → `ErrLogin` 退出 2。人工确认本身仍无超时（§9.2） | `app/acquire.go`、`config` |
+| 连败熔断（4.3） | 连续 3 篇失败即停，附排查提示；构建回环内的连败单独计数（§6.3） | `app/acquire.go` |
+| 运行阶段与用户操作（3.2/3.3 + 审查意见 16） | 明确三阶段：**准备期**（用户不操作）→ **人工期**（登录/验证码，终端提示后用户可操作浏览器）→ **自动期**（用户不得操作，避免干扰自动化）。提示文案按阶段切换，消除 spec 3.2 与 3.3 的表面矛盾 | `cli/prompt.go`、`cli/reporter.go` |
 | 中途登出（4.4） | `Navigate` 与每次 `Execute`（含点击、翻页、滚动）后探测登出特征（M10）；命中即返回 `ErrLogin`，由 `app` 走登录恢复 | `adapter/page/execute.go`、`app/acquire.go` |
 | 超时兜底（3.2-3） | 所有等待均带 `config` 超时，默认值见下；超时按失败处理 | `config`、`adapter/page/navigate.go` |
 | 拟人化（3.4） | 篇间 `--delay` 区间（默认 3–8s）、点击间 1–3s 随机；等待条件为"网络空闲/元素就绪"而非固定 sleep | `adapter/clock/waiter.go` |
 | 依赖检查（3.1） | 启动即检 Chrome 与 `ebook-convert`，缺失退出 1 | `adapter/publish/probe.go` |
 | 依赖探测路径（M9） | Chrome：`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` → `exec.LookPath("google-chrome")`；`ebook-convert`：`exec.LookPath` → `/Applications/calibre.app/Contents/MacOS/ebook-convert` | `adapter/publish/probe.go` |
-| 凭据安全（3.1） | 日志只输出标题/进度/路径，**stderr** 唯一出口，统一脱敏 | `cli/log.go` |
+| 凭据安全（3.1） | 日志只输出标题/进度/路径，**stderr** 唯一出口（`cli/reporter.go` + `cli/log.go`），统一脱敏 | `cli/log.go` |
 | 复制语义（3.9） | 同名覆盖；指定挂载点缺 `documents/` 时自动创建（C2）；失败非 0 退出 | `adapter/publish/kindle_usb.go` |
-| 服务层不碰 IO（审查意见 8/9） | `service/ebook` 只产出 EPUB 字节与转换参数；写文件归 `ArtifactStore`，起进程与错误分类归 `Converter` | `service/ebook/*`、`adapter/storage`、`adapter/publish` |
+| 服务层不碰 IO（审查意见 8/9） | `service/ebook` 只产出 EPUB 字节与转换参数；写文件归 `ArtifactStore`，起进程与错误分类归 `Converter`；正文复核经 `port.TextStore` | `service/ebook/*`、`adapter/storage`、`adapter/publish` |
 
-**构建前复核的流程回环（审查意见 12）**：读取与哈希复核是纯判断（`service/state`），执行重抓需要浏览器，因此回环由 `app/publish.go` 编排：
+**构建前复核的流程回环（审查意见 4/12）**：读取与哈希复核是纯判断（`service/state`），执行重抓需要浏览器，因此回环由 `app/publish.go` 编排。轮数语义写死为"**复核 → 回抓 → 再复核**，回抓最多 `BuildRetryRounds` 次"：
 
 ```
-for buildRound in 1..2:
-    bad := state.VerifyTexts(issue, state, store)   // 纯判定：缺失/哈希不符的篇
-    if len(bad) > 0:
-        app.acquire(bad)                            // 回到抓取流程，复用 §6.3 的重试策略
-        continue
-    epub := epubBuilder.Build(issue, texts)         // 纯生成，返回字节
-    store.WriteEPUB(issue.DirName, epub)
-    converter.ToMOBI(ctx, plan)                     // 唯一的进程执行点
-    state.MarkBuilt(issue.ID); store.Save(state)
-    break
-否则 → ErrFetch，退出 3
+retriesLeft := cfg.BuildRetryRounds            // 默认 2：最多回抓 2 次
+for {
+    bad := state.VerifyTexts(issue, state, textStore)   // 纯判定：缺失/哈希不符的篇
+    if len(bad) == 0 { break }                          // 复核通过 → 构建
+    if retriesLeft == 0 { return ErrFetch }             // 回抓额度用尽 → 退出 3
+    app.acquire(bad)                                    // 复用 §6.3 策略（含 3 次尝试与登录恢复）
+    retriesLeft--
+}                                                       // 回抓成功后必回到复核，不会“抓完却不构建”
+
+epub := epubBuilder.Build(issue, texts)                 // 纯生成，返回字节
+store.WriteEPUB(issue.DirName, epub)
+converter.ToMOBI(ctx, plan)                             // 唯一的进程执行点
+state.MarkBuilt(issue.ID); store.Save(state)
 ```
+
+关键点：**`continue`/循环结构保证每次回抓之后都会重新复核**；`BuildRetryRounds` 计的是"回抓次数"而不是"循环次数"，因此不存在"第二轮回抓成功却没机会构建"的漏洞。
 
 **Kindle 定位的组合方式（审查意见 7）**：`service/kindle` 只做纯规则（给定 `--kindle` 与候选卷列表，选出目标卷），不读盘；读盘由 `adapter/publish.VolumeScanner` 负责，创建目录与复制由 `DeviceWriter` 负责。三者都由 `app` 装配调用：
 
@@ -464,8 +537,10 @@ app 调 writer.Copy(ctx, vol, mobiPath, name)    // 覆盖同名；失败 → Er
 | `ArticleClickLimit` | 50 | **单篇 Expand + NextPage 合计**上限，spec 3.7-5（审查意见 1：此前误写为按页 50） |
 | `ArticleTotalSteps` | 200 | 单篇动作总步数兜底闸，不得替代 50 次硬上限 |
 | `RetryBackoff` | 2s, 4s | spec 4.3 |
+| `ArticleRetryLimit` | 3 | 单篇最多 3 次尝试，spec 4.3 |
 | `ConsecutiveFailureLimit` | 3 | spec 4.3 |
-| `BuildRetryRounds` | 2 | 构建前复核发现损坏时，最多回抓轮数（审查意见 12） |
+| `BuildRetryRounds` | 2 | 构建前复核发现损坏时的**回抓次数**上限（审查意见 4） |
+| `LoginRecoveryLimit` | 3 | "恢复→再失效"自动循环上限，超出 → `ErrLogin` 退出 2（审查意见 6） |
 | `OutputProfile` | `kindle` | 传给 `ebook-convert --output-profile`；待 KF7/KF8 确认后只需改此处（L4） |
 | `BrowserProfileDir` | `~/.caixin/browser-profile` | 创建时 `0700` |
 | `KindleMount` | `/Volumes/Kindle` | 见下 |
@@ -476,12 +551,21 @@ app 调 writer.Copy(ctx, vol, mobiPath, name)    // 覆盖同名；失败 → Er
 
 > `--delay "5"`（单值）为架构扩展，允许但属 spec 未列出的超集：`--help` 中显式写明"单值等价 `N-N`"，并建议同步补入 spec（审查意见 19）。
 
-**Kindle 挂载点判定（M7 / C2 已定案）**：
+**Kindle 挂载点判定（M7 / C2 已定案 + 审查意见 10）**
 
-1. `--kindle` 给出且存在：`documents/` 不存在则**创建**该目录（`MkdirAll`，0755），随后照常拷贝；创建失败或后续拷贝失败 → 退出 5。
-2. `--kindle` 未给出：扫描 `/Volumes/*`，取第一个含 `documents/` 的卷；**扫描路径不创建目录**，无 `documents/` 的卷直接跳过（避免在任意 U 盘上新建目录）。
-3. 均无 → 未检测到设备：提示成品路径，退出 0。
-4. 中途挂载点消失、复制失败 → 退出 5。
+前提：`--kindle` 的参数**可省略**（省略时取默认 `/Volumes/Kindle`）——这一形态本身就是 spec 给出的"可指定 + 默认值"设计，因此必须区分"用户显式给了路径"与"使用了默认值"两种情形，否则无法既满足 spec 的默认行为又避免误写。
+
+| # | 情形 | 行为 |
+|---|---|---|
+| 1 | **显式** `--kindle /path` 且路径存在 | 使用之；缺 `documents/` 则创建（`MkdirAll` 0755）；创建或拷贝失败 → 退出 5 |
+| 2 | **显式** `--kindle /path` 但路径**不存在** | **报错 `ErrCopy` 退出 5**，提示"指定的挂载点不存在：/path"。**不回退扫描**（审查意见 10）：用户显式写错的路径若被静默改写到别的卷，可能把杂志拷进错误的设备，是最坏结果 |
+| 3 | **未显式**（默认 `/Volumes/Kindle`） | 扫描 `/Volumes/*`，取第一个含 `documents/` 的卷；**扫描阶段只读、不创建目录**（避免在任意 U 盘上新建目录） |
+| 4 | 未显式且扫描无命中 | 未检测到设备：提示成品路径，退出 0 |
+| 5 | 运行中挂载点消失、复制失败 | 退出 5 |
+
+实现要点：`model.KindleRequest{Mount string, Explicit bool}` 把"是否显式"从 CLI 传到纯规则 `service/kindle.Select`，判定逻辑全部落在纯函数里、可单测。默认值 `/Volumes/Kindle` 不存在**不算错误**（属情形 3），因此 macOS 上没插 Kindle 时仍是"扫描或退出 0"的正常路径。
+
+> 该行为中"显式但不存在 → 报错"是架构对 spec 3.9 的**细化**（spec 未定义），已记入 `--help`；如需改为"警告后回退扫描"，只需改 `Select` 一个分支。
 
 > 即：**只在用户显式指定的挂载点上创建 `documents/`**；自动扫描阶段保持只读探测。
 
@@ -490,11 +574,11 @@ app 调 writer.Copy(ctx, vol, mobiPath, name)    // 覆盖同名；失败 → Er
 | 码 | 含义 | 触发源 |
 |---|---|---|
 | 0 | 成功（含未检测到 Kindle 的自行拷入提示） | 正常结束 |
-| 1 | 参数错误 / 依赖缺失 / 浏览器启动失败（含 profile 占用） | `ErrUsage`、`ErrDependency` |
-| 2 | 登录失败或超时（含 `--headless` 下遇到登录/验证码） | `ErrLogin` |
-| 3 | 抓取失败（含连败熔断、单篇点击超限、全篇步数超限） | `ErrFetch` |
+| 1 | 参数错误 / 依赖缺失 / 浏览器启动失败（含 profile 占用）/ `--full` 清理失败 | `ErrUsage`、`ErrDependency` |
+| 2 | 登录失败或超时（含 `--headless` 下遇到登录/验证码、登录恢复次数用尽） | `ErrLogin` |
+| 3 | 抓取失败（含连败熔断、单篇点击超限、步数超限、最终成功判定未通过、构建前复核未通过） | `ErrFetch` |
 | 4 | EPUB/MOBI 转换失败 | `ErrConvert` |
-| 5 | Kindle 复制失败（含指定挂载点创建/写入失败） | `ErrCopy` |
+| 5 | Kindle 复制失败（含指定挂载点不存在、创建/写入失败） | `ErrCopy` |
 
 > C1 已定案：profile 被占用归 **1**（以 spec 4.5 为准；spec 3.1 已同步修订为"退出码 1"）。
 > C4 已定案：参数错误与依赖缺失**共用 1**，spec 4.5 表格不动；实现侧以日志首行前缀强制区分（约定见 §6.1 步骤 0 与 §5 约定）。
@@ -507,12 +591,23 @@ app 调 writer.Copy(ctx, vol, mobiPath, name)    // 覆盖同名；失败 → Er
 |---|---|
 | 单元（纯逻辑，覆盖 ≥ 80%） | `issue`（去重、期号匹配、sanitize、滚动终止）、`article`（`Plan` 优先级顺序、**余下全文单击即完整时的早退**、**下一页逐页点到消失**、段落去重、成功判定、**单篇点击合计 50 次上限**、200 步兜底）、`state`（跳过/重建判定、哈希、`built_issue_id` 与产物存在性组合）、`kindle`（挂载点优先级、指定挂载点建目录、扫描阶段不创建）、`ebook`（EPUB 结构与元数据、转换参数构建）、`config`（`--delay` 解析边界、各超时默认值、路径规范化）——全部表驱动，输入为 `testdata/` 快照 |
 | 集成（跨两层） | `app` + `service` + `adapter` 的 fake：`fakebrowser` 按脚本回放快照与动作，`fakeconv` 记录调用。覆盖：增量重跑只抓未完成篇、正文文件缺失/哈希不符时**回抓后重建**（M2 + 审查意见 12）、转换失败后重跑**不跳过**重建（H6）、**`--no-kindle` 下 MOBI 缺失仍重建**（审查意见 5）、余下全文路线与下一页路线各一篇的端到端拼接（H5）、`--full` 全量、连败熔断、未检测到 Kindle 时退出 0 |
-| 契约 | 每个消费方接口在 `testutil` 提供 fake；编译期断言**集中且仅**放在 `internal/wire`（`main.go` 只调用装配，不再自称断言处，审查意见 15），以免 adapter 反向导入 service（H4）：`var _ article.Navigator = (*page.Client)(nil)`、`var _ app.PageSource = (*page.Client)(nil)`、`var _ page.Prompter = cli.Prompter{}` |
+| 契约 | 每个消费方接口在 `testutil` 提供 fake；编译期断言**集中且仅**放在 `internal/wire`（`main.go` 只调用装配，意见(二) 15），以免 adapter 反向导入 service（H4）。断言清单（全部指向 `port`，保证实现方签名一致，审查意见 1）：`var _ port.Navigator = (*page.Client)(nil)`、`var _ port.PageSource = (*page.Client)(nil)`、`var _ port.Prompter = (*cli.Prompter)(nil)`、`var _ port.TextStore = (*storage.ArticleText)(nil)`、`var _ app.IssueLocator = (*issue.Locator)(nil)`、`var _ app.ArticleFetcher = (*article.Fetcher)(nil)`、`var _ app.Reporter = (*cli.Reporter)(nil)` |
+| 边界回归 | 针对本轮 4 个 bug 各留一条**回归用例**：末页正文不丢（意见 2）、展开后正文不丢且不重复（意见 4 曾误判）、`done` 出口的不完整正文判失败（意见 3）、回抓成功后必构建（意见 4） |
 | 约束 | 单测禁真实网络/线上接口；不用 `time.Sleep` 做同步；`go test ./...` 一键跑通；产物比对放 `testutil/goldens/` |
 
 日志断言（L2）：进度行分母必须是**去重后**文章数，即 `第 3/32 篇：<标题>` 中的 32 等于 `len(Issue.Articles)`；用 `cli/log.go` 的注入 writer 做断言，不读真实 stderr。
 
-对照 `testdata/` 前置产物（spec 6）：issue 页快照、"余下全文"篇、"下一页"篇。快照同时用于确认**文末特征符号、付费提示文案、期号真实格式**——三者以 `verify.go`/`period.go` 中的可替换规则表达，便于快照到位后一次校正。
+对照 `testdata/` 前置产物（spec 6）：issue 页快照、"余下全文"篇、"下一页"篇。
+
+**`testdata/` 合规约定（审查意见 14）**：样例页面含**付费订阅内容**，且 spec 3.5-4 已明确"样例 URL 与快照属实现阶段产物、不入需求文档"。
+
+| 文件 | 是否入库 | 说明 |
+|---|---|---|
+| `testdata/raw/*.html` | **不入库**（`.gitignore`） | 本地抓取的原始快照，仅用于开发期核对锚点 |
+| `testdata/fixtures/*.html` | 入库 | 手工裁剪／改写的**最小结构片段**：只保留 selector 与判定所需的 DOM 形状（起止节点、按钮、页脚标识），替换全部正文为合成文本 |
+| `testdata/README.md` | 入库 | 说明每个 fixture 覆盖的机制、来源页面类型、脱敏方式，以及"再生成原始快照"的步骤 |
+
+理由：回归测试只需要"DOM 结构 + 判定特征"，不需要真实文章内容。用合成文本的 fixture 既能长期复用、可提交、可回归，又避免在版本库中分发付费内容。测试**禁止**依赖 `raw/` 目录的存在（缺失时跳过而非失败）。
 
 **待 `testdata/` 快照复核项汇总（均为"看一眼真实页面即可定"，不阻塞编码）**：
 
@@ -542,6 +637,7 @@ app 调 writer.Copy(ctx, vol, mobiPath, name)    // 覆盖同名；失败 → Er
 | W5 | 无状态 | 等待时长由随机源决定，非确定性 | 随机源与时钟以参数注入，`service` 层对给定输入仍确定；非确定性仅存在于 `adapter/clock` |
 | W6 | 分层单向 | 当前仅 CLI 一个入口，表现层与组装职责边界较薄 | 分层仍显式保留：`cli` 只做参数/渲染，`main.go` 独占装配，便于后续加入其他入口 |
 | W7 | 分层单向 | `internal/wire` 为了放编译期断言，需同时导入 `service/*` 与 `adapter/*` | `wire` 是**装配包**，与 `main.go` 同性质（组合根），不在业务分层链上；它不导出业务行为，故不构成对分层的破坏 |
+| W8 | 契约（接口由消费方定义） | `port` 把 `PageSource`/`Navigator`/`Prompter`/`TextStore` 从消费方包上移到中立包 | **这是被 Go 语言约束逼出的必要偏离**（审查意见 1）：接口匹配要求签名完全一致，多个消费方共享同一接口时，若各自定义就无法被同一实现满足。缓解方式：`port` 只放"被 ≥2 个包消费"的接口，形状仍由使用方共同决定；单一消费方的接口（`app.Reporter`/`app.StateRepository`/`service/article.ClickWaiter`）仍留在消费方包内。详见 §5 判定规则 |
 
 ### 9.2 人工确认不设超时的例外
 
@@ -601,10 +697,10 @@ app 调 writer.Copy(ctx, vol, mobiPath, name)    // 覆盖同名；失败 → Er
 | 3.4 反爬与拟人化 | `adapter/clock/waiter.go` + `adapter/page/execute.go` |
 | 3.5 selector 策略 | `internal/selector/{selector,issue,article}.go` 唯一定义 + `testdata/` 快照 |
 | 3.6 列表解析（滚动稳定、去重、期号） | `service/issue/parse.go`、`period.go`、`scroll.go` |
-| 3.7 全文获取（两机制、拼接、50 次上限、成功判定） | `service/article/{navigate,accumulate,extract,verify}.go`（§6.2） |
+| 3.7 全文获取（两机制、拼接、50 次合计上限、最终成功判定） | `service/article/{navigate,accumulate,extract,verify}.go`（§6.2；最终判定见步骤 6） |
 | 3.8 EPUB 组装（目录名、回退 slug、sanitize、元数据、输出结构） | `service/issue/period.go`、`service/ebook/epub.go`、`adapter/storage/workspace.go` |
-| 3.9 转换与 Kindle 拷贝（不提前检测、三级探测、覆盖、未检测退出 0） | `service/ebook/command.go`、`service/kindle/rule.go`、`adapter/publish/*`；挂载点边界见 §7（C2） |
-| 4.1 增量与状态文件 | `service/state/*`、`adapter/storage/*`（原子写与正文校验见 §7） |
+| 3.9 转换与 Kindle 拷贝（不提前检测、三级探测、覆盖、未检测退出 0） | `service/ebook/command.go`、`service/kindle/rule.go`、`adapter/publish/*`；挂载点边界见 §7（C2 + 审查意见 10） |
+| 4.1 增量与状态文件 | `service/state/*`、`adapter/storage/*`（原子写、写入顺序、**增量不检测线上更新**见 §7） |
 | 4.2 `--full` | `app/app.go` |
 | 4.3 失败重试与连败熔断 | `app/acquire.go` |
 | 4.4 中途登录失效 | `adapter/page/{login,execute}.go`、`app/acquire.go` |
