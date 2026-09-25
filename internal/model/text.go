@@ -12,6 +12,8 @@ const (
 	StatusSuccess Status = "success"
 	// StatusFail 表示重试后仍失败。
 	StatusFail Status = "fail"
+	// StatusSkipped 表示按规则有意跳过（图片型栏目等）：不抓取、不算失败、不参与构建。
+	StatusSkipped Status = "skipped"
 )
 
 // ArticleText 是 extract/accumulate 的输出，也是 EPUBBuilder 的入参（M8）。

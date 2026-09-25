@@ -52,6 +52,7 @@ type Config struct {
 	EnableRemoteDebug   bool     // chromedp 调试端口，默认 false
 
 	// 输出与开关
+	URL      string // 期号页地址（唯一位置参数，spec 2）；是否给出由 cli 校验
 	OutDir   string // 父目录，默认 ~/Downloads/caixin；Load 时归一化
 	NoKindle bool   // --no-kindle：只跳过拷贝，仍产出 EPUB + MOBI
 	Full     bool   // --full：忽略既有状态全量重跑
@@ -60,6 +61,7 @@ type Config struct {
 
 // Overrides 是 CLI 参数覆盖项；字段为 nil 表示该参数未给出、保持默认值。
 type Overrides struct {
+	URL      *string // 位置参数：期号页地址
 	Out      *string // --out
 	Kindle   *string // --kindle
 	Browser  *string // --browser
@@ -123,6 +125,9 @@ func Default() Config {
 func Load(overrides Overrides, env Env) (Config, error) {
 	cfg := Default()
 
+	if overrides.URL != nil {
+		cfg.URL = *overrides.URL
+	}
 	if overrides.Out != nil {
 		cfg.OutDir = *overrides.Out
 	}
@@ -201,6 +206,8 @@ func ResolvePath(path string, env Env) string {
 	if path == "~" || strings.HasPrefix(path, "~/") {
 		home := env.HomeDir
 		if home == "" {
+			// 故意忽略错误：取不到 home 时下面的 home != "" 判断会跳过展开，
+			// 路径退化为原样返回，由 Validate 或后续 IO 明确报错，不在此处中断启动。
 			home, _ = os.UserHomeDir()
 		}
 		if home != "" {
@@ -210,6 +217,7 @@ func ResolvePath(path string, env Env) string {
 	if !filepath.IsAbs(path) {
 		workDir := env.WorkDir
 		if workDir == "" {
+			// 故意忽略错误：同上，取不到工作目录时保持相对路径，交由 filepath.Join/Clean 处理。
 			workDir, _ = os.Getwd()
 		}
 		path = filepath.Join(workDir, path)

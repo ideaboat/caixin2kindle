@@ -12,11 +12,13 @@ type State struct {
 }
 
 // ArticleState 是单篇文章的进度记录。
+// Author 是必需的：EPUB 每章要写作者署名，而重跑时正文只从本地文件重建，无法再回页面取。
 type ArticleState struct {
 	Order         int    `json:"order"`
 	URL           string `json:"url"`
 	NormalizedURL string `json:"normalized_url"`
 	Title         string `json:"title"`
+	Author        string `json:"author"`
 	Status        Status `json:"status"`
 	TextPath      string `json:"text_path"`
 	Hash          string `json:"hash"` // 对提取后的正文纯文本计算，形如 "sha256:..."

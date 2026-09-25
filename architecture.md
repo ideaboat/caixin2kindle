@@ -14,6 +14,9 @@
 | 1.6 | 按 `testdata/` 快照定稿（2026-09-25）：成功判据由"文末特征符号"改为三条可验证的 DOM 事实；图说归属定稿，新增 AI 注入文本与分页锚点剔除；**首轮认证改判在文章页**（期号页实测不设门槛）；期号文案、页面锚点、两种机制的实际行为定案 |
 | 1.7 | 新增 §8.1 selector 定稿表（唯一定义处）：期号页/文章页/剔除清单/页面事实逐条标注已定稿（✅）或待第二样本复核（🔶）；定稿两项决策——HTML 解析库 `goquery`（D9）、导语 `div#subhead` 剔除（A4）；修正 §10 中文末判据的过期表述（文末标识 → 三条 DOM 事实） |
 | 1.8 | 吸收 `caixin-snapshot` 采集器实测结论（需求方 2026-09-25 逐条批准）：① 浏览器探测纳入 Chromium 系并新增 `--browser`（spec 1.3/2/3.1 同步）；② 新增自动化指纹抑制要求；③ 新增浏览器优雅关闭与 `exit_type` 归一化；④ 页面就绪判据改为以 DOM 稳定为主、`WaitNetworkIdle` 降级并存；另补 §4 `model.PageFacts`（§6.2 步骤 6 的入参缺口）与 §9.1 W9（JS 点击兜底的 [WARN]） |
+| 1.9 | Wave 1 实现期契约修订（均为实现中暴露的缺口，见 §9.1 W10）：① `config.Config` 增 `URL`（唯一位置参数的载体，`Run(ctx, cfg)` 无处接收 URL）；② `State.ArticleState` 增 `author`（EPUB 每章要署名，重跑只读本地正文，无法再回页面取）；③ `ArtifactStore` 增 `EnsureWorkspace` / `CleanWorkspace`（§6.1 步骤 4 与 `--full` 清理无处落点）；④ `app.Deps` 增 `Nav port.Navigator`（`Locate`/`Fetch` 消费同一浏览器对象）；⑤ `cli.Deps` 改为 `NewRuntime(cfg)` 工厂（修 §9.1 W10 的装配时序矛盾） |
+| 1.9.1 | 首次真机实测（2026-09-25，第 1224 期 24 篇）后的修正：① **点击后等待改以 DOM 指纹稳定为准、上限 8s**，导航后的网络空闲二次等待同样压到 8s——财新页面有长轮询，真正的「无在途请求」不出现，原设计复用 `NetworkIdleTimeout`(60s) 导致每次点击空等 1 分钟（实测频繁出现）；② 文章页标题/署名节点缺失**不再判整篇失败**，回退到列表页条目信息，并新增「空正文」防线（三条 DOM 事实全过但无段落同样判失败）；③ **降级构建**：构建前回抓额度用尽后仍有篇目不可用时，用成功篇目产出 EPUB/MOBI、把缺失篇目录入警告与 stdout 清单，不再整期白跑（需求方 2026-09-25 确认；一篇可用正文都没有时仍返回 `ErrFetch`）；④ CLI 用户可见前缀 `告警：` 改为 `警告：`。纯逻辑可单测，浏览器相关部分仍由真机复测覆盖（§8） |
+| 1.9.2 | 需求方定案：**图片型栏目（标题以「显影」开头）直接放弃抓取**——这类报道以图片为主、正文容器与文字稿不同，纯文字 EPUB 无法承载；为它堆叠容器退化规则不划算（需求、设计与简洁的平衡）。落点：`service/article.SkipReason`（唯一规则处，只看列表标题前缀）、新增 `StatusSkipped` 状态，`Decide`/`VerifyTexts`/`NeedRebuild` 均视 skipped 为「有意缺席」（不抓取、不算失败、不计入缺失、不阻塞重建），`app.markSkipped` 首次登记并在每次运行输出说明，`Result.SkippedArticles/SkipNote` 由 cli 渲染为「已跳过（N 篇）…」 |
 
 > **引用约定**：正文中的"审查意见 N"指**第三轮**审查（本版本）；早期两轮的编号一律写作"意见(二) N"或 H/M/L 系列 ID。
 
@@ -230,7 +233,7 @@ func (t ArticleText) Body() string // 段落以空行连接，供哈希与落盘
   "schema_version": 1,
   "issue_id": "财新周刊第1234期",
   "articles": [
-    {"order":1,"url":"...","normalized_url":"...","title":"...",
+    {"order":1,"url":"...","normalized_url":"...","title":"...","author":"...",
      "status":"success","text_path":"articles/001-xxx.txt","hash":"sha256:..."}
   ],
   "artifacts": {"epub":"...epub","mobi":"...mobi","built_issue_id":"财新周刊第1234期"}
@@ -319,7 +322,7 @@ type TextStore interface {
 | `app` | `ArticleFetcher` | `Fetch(ctx, nav port.Navigator, art model.Article) (model.ArticleText, error)` | `service/article` |
 | `app` | `Waiter` | `BetweenArticles(ctx)`（篇间等待，编排层职责） | `adapter/clock` |
 | `app` | `StateRepository` | `Load(ctx, dir) (model.State, error)`；`Save(ctx, dir, s model.State) error` | `adapter/storage` |
-| `app` | `ArtifactStore` | `WriteArticleText`、`ReadArticleText`、`Exists`、`WriteEPUB(name, data)`、`Path` | `adapter/storage` |
+| `app` | `ArtifactStore` | `WriteArticleText`、`ReadArticleText`、`Exists`、`WriteEPUB(name, data)`、`Path`、`EnsureWorkspace`、`CleanWorkspace` | `adapter/storage` |
 | `app` | `EPUBBuilder` | `Build(issue model.Issue, texts []model.ArticleText) (name string, data []byte, err error)`（**不落盘**） | `service/ebook` |
 | `app` | `Converter` | `ToMOBI(ctx, plan model.ConvertPlan) error` | `adapter/publish`（calibre） |
 | `app` | `VolumeScanner` | `Volumes(ctx) ([]model.Volume, error)`（只读枚举 `/Volumes/*` 及其 `documents/`） | `adapter/publish` |
@@ -341,6 +344,8 @@ type TextStore interface {
 - 跨包传递只读结构体（`model.*`）；`app` 的进度状态是本地值，每篇后整体落盘。
 - 日志与输出分离（审查意见 5）：`app` 只调 `Reporter`（进度、告警、排查提示 → **stderr**）；`cli` 拿 `model.Result` 渲染 stdout 的最终产物路径。`app` 不导入 `cli`，由 `main.go` 注入 `cli.Reporter`。
 - 服务层不落盘、不起进程：`EPUBBuilder` 返回字节、`service/ebook.Command` 只产出参数；写文件与执行分别由 `ArtifactStore`、`Converter` 完成。`service/state` 复核正文只经 `port.TextStore`。
+- **装配时序（v1.9）**：`config` 由 `cli.Run` 在解析参数后产出，而适配器（profile 目录、`--out` 根、`--delay` 区间、浏览器候选）需要最终 `config` 才能构造；因此 `cli.Deps` 用 `NewRuntime func(cfg config.Config) Runtime` 闭包代替已构造好的 `App`/`Checker`，由 `main.go` 提供该闭包。这样既保留 `cli.Run(args, deps) error` 签名与"组合根在 main"，又不让 `cli` 导入 `adapter`（§9.1 W10）。
+- **浏览器关闭（v1.9）**：`port.Navigator` 不含关闭能力，而优雅关闭必须在进程退出前完成；由 `main.go` 持有 `*adapter/page.Client`，在 `cli.Run` 返回后调用其 `Close()`，再映射退出码（§7 浏览器优雅关闭）。
 
 ---
 
@@ -521,19 +526,25 @@ attempt 1..3：                                    // ArticleRetryLimit = 3
 | 服务层不碰 IO（审查意见 8/9） | `service/ebook` 只产出 EPUB 字节与转换参数；写文件归 `ArtifactStore`，起进程与错误分类归 `Converter`；正文复核经 `port.TextStore` | `service/ebook/*`、`adapter/storage`、`adapter/publish` |
 | 自动化指纹抑制（v1.8，实测） | 启动参数固定含 `--enable-automation=false`（chromedp 的 bool flag 置 false 会整条省略）、`--disable-blink-features=AutomationControlled`、`--test-type`、`--no-first-run`、`--no-default-browser-check`、`UserDataDir=<profile>`、窗口 1440×1000。**理由**：只要挂 CDP，Blink 就会打开 `AutomationControlled`，**只关 `--enable-automation` 不足以让 `navigator.webdriver` 变 false**；关掉它又会让新版 Chrome/Brave 弹「不受支持的命令行标记」，故用 `--test-type` 抑制（只关 UI 提示，不改变页面行为）。启动后探一次 `navigator.webdriver`，为 true 则 `Reporter.Warn`（不阻断）。**禁止当作无用参数清理** | `adapter/page/open.go`、`config` |
 | 浏览器优雅关闭（v1.8，实测） | 退出前：发 CDP `browser.Close()` → 等 `Allocator.Wait()`（上限 `BrowserCloseWait`）→ **才**取消 context。只发关闭命令不够：其响应可能在进程把 `exit_type` 落盘之前返回，此刻取消 context 仍是 SIGKILL，profile 就留 `Crashed`。例外：中途 Ctrl-C 来不及走此路径，下次可能弹一次对话框，不影响数据 | `adapter/page/open.go` |
-| 页面就绪判据（v1.8，实测） | 主判据改为 **DOM 指纹稳定**：`WaitReady("body")` 后轮询 `document.querySelectorAll('*').length + ':' + body.textContent.length`，连续 `DOMStableChecks`(3) 次不变即稳定（`DOMStablePollInterval` 500ms，上限 `DOMStableTimeout` 25s，超时告警但仍照常快照）。**理由**：财新页面有大量异步注入（推荐位、AI 文本、图集 swiper），`WaitNetworkIdle` 会早于/晚于 DOM 稳定而误判。`WaitNetworkIdle` 降级保留为可选二次等待 | `adapter/page/navigate.go`、`port/page.go` |
+| 页面就绪判据（v1.8，实测；v1.9.1 调上限） | 主判据改为 **DOM 指纹稳定**：`WaitReady("body")` 后轮询 `document.querySelectorAll('*').length + ':' + body.textContent.length`，连续 `DOMStableChecks`(3) 次不变即稳定（`DOMStablePollInterval` 500ms，上限 `DOMStableTimeout` 25s，超时告警但仍照常快照）。**理由**：财新页面有大量异步注入（推荐位、AI 文本、图集 swiper），`WaitNetworkIdle` 会早于/晚于 DOM 稳定而误判。`WaitNetworkIdle` 降级保留为可选二次等待；**v1.9.1 起，导航后的二次等待与点击后的稳定等待都只用 8s 短上限**（长轮询页面上「无在途请求」可能永不出现，复用 60s 会造成每次点击空等 1 分钟） | `adapter/page/navigate.go`、`adapter/page/execute.go`、`port/page.go` |
+| 标题/署名回退（v1.9.1，实测） | 文章页 `#the_content #conTit h1` / `#author_baidu` 缺失时不再判整篇失败，回退到列表页条目的标题与署名；同时新增空正文防线：三条 DOM 事实全过但整篇无任何段落同样判失败，绝不写 success 产出空章节 | `service/article/extract.go`、`service/article/fetch.go` |
+| 图片型栏目跳过（v1.9.2，需求方定案） | 标题以「显影」开头的报道以图片为主、正文容器与文字稿不同，**直接不抓取**：`service/article.SkipReason` 是唯一规则处（只看列表标题前缀，与页面结构解耦），状态记 `skipped`；`Decide` 不列待抓、`VerifyTexts` 不算不可用、`NeedRebuild` 视为可接受、`readTexts` 不收，且每次运行都输出「已跳过（N 篇）…」+ 原因。判据不落在文章页 DOM，故不引入新的不可单测分支 | `service/article/skip.go`、`model/text.go`、`service/state/decide.go`、`app/skip.go`、`cli/cli.go` |
 
-**构建前复核的流程回环（审查意见 4/12）**：读取与哈希复核是纯判断（`service/state`），执行重抓需要浏览器，因此回环由 `app/publish.go` 编排。轮数语义写死为"**复核 → 回抓 → 再复核**，回抓最多 `BuildRetryRounds` 次"：
+**构建前复核的流程回环（审查意见 4/12；v1.9.1 增加降级构建）**：读取与哈希复核是纯判断（`service/state`），执行重抓需要浏览器，因此回环由 `app/publish.go` 编排。轮数语义写死为"**复核 → 回抓 → 再复核**，回抓最多 `BuildRetryRounds` 次"：
 
 ```
 retriesLeft := cfg.BuildRetryRounds            // 默认 2：最多回抓 2 次
 for {
     bad := state.VerifyTexts(issue, state, textStore)   // 纯判定：缺失/哈希不符的篇
     if len(bad) == 0 { break }                          // 复核通过 → 构建
-    if retriesLeft == 0 { return ErrFetch }             // 回抓额度用尽 → 退出 3
+    if retriesLeft == 0 { unavailable = bad; break }     // 额度用尽 → 降级：用其余篇目构建
     app.acquire(bad)                                    // 复用 §6.3 策略（含 3 次尝试与登录恢复）
     retriesLeft--
 }                                                       // 回抓成功后必回到复核，不会“抓完却不构建”
+
+texts := readTexts(issue, state)                        // 只收 success 且正文可读的篇目
+if len(texts) == 0 { return ErrFetch }                  // 底线：一篇可用正文都没有则不产空书
+if len(unavailable) > 0 { Reporter.Warn(缺失篇目清单) }   // 警告 + model.Result.MissingArticles 渲染到 stdout
 
 epub := epubBuilder.Build(issue, texts)                 // 纯生成，返回字节
 store.WriteEPUB(issue.DirName, epub)
@@ -541,7 +552,7 @@ converter.ToMOBI(ctx, plan)                             // 唯一的进程执行
 state.MarkBuilt(issue.ID); store.Save(state)
 ```
 
-关键点：**`continue`/循环结构保证每次回抓之后都会重新复核**；`BuildRetryRounds` 计的是"回抓次数"而不是"循环次数"，因此不存在"第二轮回抓成功却没机会构建"的漏洞。
+关键点：**`continue`/循环结构保证每次回抓之后都会重新复核**；`BuildRetryRounds` 计的是"回抓次数"而不是"循环次数"，因此不存在"第二轮回抓成功却没机会构建"的漏洞。**降级构建**（v1.9.1，需求方确认）：个别篇目重试后仍不可用时，用成功篇目产出成品并把缺失篇目录入 `Reporter.Warn` 与 `model.Result.MissingArticles`（stdout 打印"未抓取（N 篇）：…"），退出码仍为 0——代价是 spec 7 验收标准 1/2 打折扣，故必须显式列出缺失清单；若全部篇目都不可用则返回 `ErrFetch` 退出 3，绝不产出空书。
 
 **Kindle 定位的组合方式（审查意见 7）**：`service/kindle` 只做纯规则（给定 `--kindle` 与候选卷列表，选出目标卷），不读盘；读盘由 `adapter/publish.VolumeScanner` 负责，创建目录与复制由 `DeviceWriter` 负责。三者都由 `app` 装配调用：
 
@@ -613,7 +624,7 @@ app 调 writer.Copy(ctx, vol, mobiPath, name)    // 覆盖同名；失败 → Er
 | 0 | 成功（含未检测到 Kindle 的自行拷入提示） | 正常结束 |
 | 1 | 参数错误 / 依赖缺失 / 浏览器启动失败（含 profile 占用）/ `--full` 清理失败 | `ErrUsage`、`ErrDependency` |
 | 2 | 登录失败或超时（含 `--headless` 下遇到登录/验证码、登录恢复次数用尽） | `ErrLogin` |
-| 3 | 抓取失败（含连败熔断、单篇点击超限、步数超限、最终成功判定未通过、构建前复核未通过） | `ErrFetch` |
+| 3 | 抓取失败（含连败熔断、单篇点击超限、步数超限、最终成功判定未通过、构建前复核后无任何可用正文） | `ErrFetch` |
 | 4 | EPUB/MOBI 转换失败 | `ErrConvert` |
 | 5 | Kindle 复制失败（含指定挂载点不存在、创建/写入失败） | `ErrCopy` |
 
@@ -783,6 +794,7 @@ app 调 writer.Copy(ctx, vol, mobiPath, name)    // 覆盖同名；失败 → Er
 | W7 | 分层单向 | `internal/wire` 为了放编译期断言，需同时导入 `service/*` 与 `adapter/*` | `wire` 是**装配包**，与 `main.go` 同性质（组合根），不在业务分层链上；它不导出业务行为，故不构成对分层的破坏 |
 | W8 | 契约（接口由消费方定义） | `port` 把 `PageSource`/`Navigator`/`Prompter`/`TextStore` 从消费方包上移到中立包 | **这是被 Go 语言约束逼出的必要偏离**（审查意见 1）：接口匹配要求签名完全一致，多个消费方共享同一接口时，若各自定义就无法被同一实现满足。缓解方式：`port` 只放"被 ≥2 个包消费"的接口，形状仍由使用方共同决定；单一消费方的接口（`app.Reporter`/`app.StateRepository`/`service/article.ClickWaiter`）仍留在消费方包内。详见 §5 判定规则 |
 | W9 | 契约/合规（spec 3.4「模拟真实点击」） | `adapter/page/execute.go` 在真实点击失败时会退回 DOM 级 `el.click()`（v1.8，来自 `caixin-snapshot` 实测） | **有意保留并记录**：`el.click()` 是 DOM API，不是财新内部 API，故不违反 spec 3.4「不直接调用内部 API」；而 chromedp 的真实点击在元素被遮挡/动画未结束时偶发失败，去掉兜底会让整篇被判失败、白耗重试额度。取舍：**真实点击优先，仅在失败后降级**，并在日志留痕（spec 3.4 已同步写入该降级） |
+| W10 | 契约（v1.9 契约修订） | 冻结的契约缺了四类信息，Wave 1 实现时补：`config.Config.URL`、`ArticleState.author`、`ArtifactStore.EnsureWorkspace/CleanWorkspace`、`app.Deps.Nav`；另 `cli.Deps` 由 `{App,Checker}` 改为 `NewRuntime(cfg)` 工厂 | **改的是契约而非绕过契约**，四条都补的是"文档漏写、实现必需"的信息：① URL 是唯一位置参数，`app.Run(ctx,cfg)` 只有 cfg 能承载；② 重跑时正文与署名都从本地重建，state 不存 author 就无法写 EPUB 署名；③ §6.1 步骤 4 建目录与 `--full` 清理在冻结接口里没有落点；④ `Locate`/`Fetch` 消费的浏览器对象与 `Opener` 是同一实例，需显式注入。`cli.Deps` 的改动修的是装配时序矛盾（config 在 `cli.Run` 内产出、适配器在 `main` 构造），保留 `Run(args, deps)` 签名不变。详见 §5 约定与 v1.9 变更行 |
 
 ### 9.2 人工确认不设超时的例外
 

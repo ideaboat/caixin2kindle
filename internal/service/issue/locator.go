@@ -1,11 +1,10 @@
 // Package issue 负责期号页的解析：期号、目录名与去重后的文章列表（spec 3.6）。
-//
-// Wave 0 只冻结本包的跨包契约（Locator）；parse.go / period.go / scroll.go 的
-// 内部实现与同包测试由 Wave 1 的 B 路负责（先写测试，再写实现）。
 package issue
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"caixin2kindle/internal/model"
 	"caixin2kindle/internal/port"
@@ -23,7 +22,20 @@ func NewLocator(set selector.Set) *Locator {
 }
 
 // Locate 打开期号页、滚动至列表稳定（spec 3.6），再解析期号与去重后的文章列表（§6.1 步骤 3）。
-// 期号页不设登录门槛，未登录同样返回完整列表，故此处不做认证探测。
+// 期号页不设登录门槛，未登录同样返回完整列表，故此处不做认证探测：登录判据只落在文章页。
 func (l *Locator) Locate(ctx context.Context, page port.PageSource, rawURL string) (model.Issue, error) {
-	panic("TODO(wave1-B): 见 architecture.md §6.1 步骤 3")
+	if err := page.Navigate(ctx, rawURL); err != nil {
+		if errors.Is(err, model.ErrLogin) {
+			return model.Issue{}, fmt.Errorf("打开期号页：%w", err)
+		}
+		return model.Issue{}, fmt.Errorf("%w：打开期号页失败：%w", model.ErrFetch, err)
+	}
+	if err := ScrollUntilStable(ctx, page, l.Set); err != nil {
+		return model.Issue{}, err
+	}
+	pageHTML, err := page.HTML(ctx)
+	if err != nil {
+		return model.Issue{}, fmt.Errorf("%w：读取期号页失败：%w", model.ErrFetch, err)
+	}
+	return ParseIssue(pageHTML, l.Set, rawURL)
 }

@@ -116,6 +116,7 @@ func TestLoad(t *testing.T) {
 
 	t.Run("覆盖项生效", func(t *testing.T) {
 		// Arrange
+		url := "https://weekly.caixin.com/2026/cw1224/"
 		out := "/tmp/caixin-out"
 		kindle := "/Volumes/Paperwhite"
 		browser := "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
@@ -126,6 +127,7 @@ func TestLoad(t *testing.T) {
 
 		// Act
 		cfg, err := Load(Overrides{
+			URL:      &url,
 			Out:      &out,
 			Kindle:   &kindle,
 			Browser:  &browser,
@@ -138,6 +140,9 @@ func TestLoad(t *testing.T) {
 		// Assert
 		if err != nil {
 			t.Fatalf("Load 意外报错：%v", err)
+		}
+		if cfg.URL != url {
+			t.Fatalf("位置参数 URL 未生效：%q", cfg.URL)
 		}
 		if cfg.OutDir != out || cfg.KindleMount != kindle || cfg.BrowserPath != browser {
 			t.Fatalf("路径类覆盖未生效：out=%q kindle=%q browser=%q", cfg.OutDir, cfg.KindleMount, cfg.BrowserPath)
