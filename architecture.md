@@ -1,6 +1,15 @@
 # caixin2kindle 软件架构文档
 
-版本 1.0 · 对应需求 `spec.md` · 遵循 `go-rules/architecture.md` v0.2
+版本 1.4.1 · 对应需求 `spec.md` · 遵循 `go-rules/architecture.md` v0.2
+
+| 版本 | 变更摘要 |
+|---|---|
+| 1.0 | 初版：分层、接口、流程、可靠性、测试、规范自检 |
+| 1.1 | 按首轮审查修订（H1-H7、M1-M13、L1-L5）：selector 中立包、conflict 表、config 默认值表 |
+| 1.2 | 余下全文单击即完整；Kindle 自动建 `documents/`；C1 以 spec 4.5 为准 |
+| 1.3 | C2/C3/C4 定案；spec 3.1 退出码同步 |
+| 1.4 | 按次轮审查修订（16 条）：单篇点击合计 50、归档游标、`--no-kindle` 重建、接口归属与类型 |
+| 1.4.1 | 图说归属降级为待快照复核；汇总 6 项待复核清单 |
 
 ---
 
