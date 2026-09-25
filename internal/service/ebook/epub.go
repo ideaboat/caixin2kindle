@@ -30,15 +30,13 @@ func NewBuilder() *Builder {
 }
 
 // Build 按当期目录顺序生成 EPUB 3（纯文字、无图片），返回文件名与完整字节。
+// 「周刊导播」存在时恒为第一章，其余仍按目录顺序（spec 3.8）。
 // 元数据：语言 zh-CN、书名 = 期号、作者 = 财新周刊；每章含作者署名（spec 3.8）。
 func (b *Builder) Build(issue model.Issue, texts []model.ArticleText) (string, []byte, error) {
 	if len(texts) == 0 {
 		return "", nil, fmt.Errorf("%w：没有可写入 EPUB 的文章", model.ErrConvert)
 	}
-	ordered := slices.Clone(texts)
-	slices.SortStableFunc(ordered, func(left, right model.ArticleText) int {
-		return cmp.Compare(left.Order, right.Order)
-	})
+	ordered := readingOrder(texts)
 
 	var buffer bytes.Buffer
 	archive := zip.NewWriter(&buffer)
@@ -50,6 +48,31 @@ func (b *Builder) Build(issue model.Issue, texts []model.ArticleText) (string, [
 		return "", nil, fmt.Errorf("%w：生成 EPUB 失败：%w", model.ErrConvert, err)
 	}
 	return issue.DirName + ".epub", buffer.Bytes(), nil
+}
+
+// weeklyGuideTitle 是「周刊导播」栏目的标题标记：该条目在期号页目录中的位置不固定，
+// 但按阅读约定恒为全书第一章（spec 3.8）。
+const weeklyGuideTitle = "周刊导播"
+
+// readingOrder 返回按阅读顺序排列的副本：周刊导播恒为第一篇，其余保持期目录顺序。
+func readingOrder(texts []model.ArticleText) []model.ArticleText {
+	ordered := slices.Clone(texts)
+	slices.SortStableFunc(ordered, func(left, right model.ArticleText) int {
+		if diff := cmp.Compare(guideRank(left.Title), guideRank(right.Title)); diff != 0 {
+			return diff
+		}
+		return cmp.Compare(left.Order, right.Order)
+	})
+	return ordered
+}
+
+// guideRank 给「周刊导播」最小排序值使其排在最前，其余为 1。
+// 用包含匹配而非前缀：目录标题可能带 `{{` 等模板噪声（如 `{{周刊导播｜…`），正文页标题则可能不带。
+func guideRank(title string) int {
+	if strings.Contains(title, weeklyGuideTitle) {
+		return 0
+	}
+	return 1
 }
 
 // writeEntries 按固定顺序写入全部条目：mimetype 必须首个且不压缩（EPUB 规范硬要求）。

@@ -215,6 +215,48 @@ func TestBuildSortsByOrder(t *testing.T) {
 	}
 }
 
+// TestBuildPutsWeeklyGuideFirst 覆盖「周刊导播」置首：无论其在期目录中排第几，都必须是第一章，
+// 其余篇目保持原有相对顺序；导航文档与正文顺序一致。
+func TestBuildPutsWeeklyGuideFirst(t *testing.T) {
+	// Arrange
+	texts := []model.ArticleText{
+		{Order: 1, Title: "甲篇", Paragraphs: []string{"甲段"}},
+		{Order: 2, Title: "乙篇", Paragraphs: []string{"乙段"}},
+		{Order: 3, Title: "{{周刊导播｜本期要闻", Paragraphs: []string{"导播段"}},
+		{Order: 4, Title: "丙篇", Paragraphs: []string{"丙段"}},
+	}
+
+	// Act
+	_, data, err := NewBuilder().Build(testIssue(), texts)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("Build 返回错误：%v", err)
+	}
+	_, entries := openArchive(t, data)
+	if !strings.Contains(entries["OEBPS/text/chapter-001.xhtml"], "导播段") {
+		t.Error("第一章应为「周刊导播」")
+	}
+	// 其余三篇仍按目录顺序：甲 → 乙 → 丙，依次落在第 2/3/4 章。
+	remaining := []struct {
+		path      string
+		paragraph string
+	}{
+		{"OEBPS/text/chapter-002.xhtml", "甲段"},
+		{"OEBPS/text/chapter-003.xhtml", "乙段"},
+		{"OEBPS/text/chapter-004.xhtml", "丙段"},
+	}
+	for _, want := range remaining {
+		if !strings.Contains(entries[want.path], want.paragraph) {
+			t.Errorf("%s 应包含 %q（其余篇目保持目录顺序）", want.path, want.paragraph)
+		}
+	}
+	nav := entries["OEBPS/nav.xhtml"]
+	if strings.Index(nav, "周刊导播") > strings.Index(nav, "甲篇") {
+		t.Error("nav.xhtml 中「周刊导播」应排在其余篇目之前")
+	}
+}
+
 // TestBuildEscapesMarkup 覆盖注入边界：正文里的尖括号与 & 必须被转义，不得成为标签。
 func TestBuildEscapesMarkup(t *testing.T) {
 	// Arrange
