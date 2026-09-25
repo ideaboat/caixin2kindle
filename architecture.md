@@ -69,7 +69,7 @@
 ## 3. 分层与目录结构
 
 ```
-caixin-download/
+caixin2kindle/
 ├── main.go                      # 唯一组装根：装配适配器 → app → cli，映射退出码
 ├── internal/
 │   ├── cli/                     # 表现层：参数、终端交互、日志、退出码
