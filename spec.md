@@ -78,7 +78,7 @@ caixin2kindle <url>
 ### 3.1 依赖检查与启动
 
 - 启动时检查：Chrome 是否安装、`ebook-convert` 是否在 PATH 中；缺失时输出对应安装提示并退出（退出码 1）。
-- 浏览器 profile 目录固定为 `~/.caixin/browser-profile`，权限设为 `0700`（内含登录态）；启动时若检测到 profile 被占用（Chrome SingletonLock，已有实例在运行），提示后以退出码 2 退出。
+- 浏览器 profile 目录固定为 `~/.caixin/browser-profile`，权限设为 `0700`（内含登录态）；启动时若检测到 profile 被占用（Chrome SingletonLock，已有实例在运行），提示后以退出码 1 退出。
 - 日志默认输出到 **stderr**；进度日志格式见 4.5。日志永不输出 cookie 及请求头中的凭据。
 
 ### 3.2 认证（持久化 profile + 首次手动登录）
