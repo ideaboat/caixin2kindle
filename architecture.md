@@ -370,7 +370,7 @@ type TextStore interface {
 
 ### 6.2 单篇获取（`article.Fetch`，对应 spec 3.7）
 
-**两种机制的已确认行为（来自需求方一手说明，待 `testdata/` 快照复核）**：
+**两种机制的已确认行为（需求方一手说明，已写入 spec 3.7；锚点细节待 `testdata/` 快照复核）**：
 
 | 机制 | 行为 | 对设计的影响 |
 |---|---|---|
@@ -616,11 +616,13 @@ app 调 writer.Copy(ctx, vol, mobiPath, name)    // 覆盖同名；失败 → Er
 | 1 | 文末特征符号的具体形态 | 《待快照》以规则表达 | `service/article/verify.go` |
 | 2 | 付费提示 / 未展开预览文案特征 | 同上 | `service/article/verify.go` |
 | 3 | 期号文案真实格式（"第 N 期"变体） | 宽松正则匹配 | `service/issue/period.go` |
-| 4 | "余下全文"单击即完整、"下一页"需点到消失 | 已按需求方说明实现（§6.2） | `service/article/navigate.go` |
+| 4 | "余下全文"单击即完整、"下一页"需点到消失、并存时的优先级 | **已写入 spec 3.7**（2026 修订），架构与 spec 现已一致 | 仅锚点待快照确认（`navigate.go`） |
 | 5 | 正文是否存在图说（`<figcaption>`）及其归属 | 保留为文本并加 `图：` 前缀（§4.2） | `service/article/extract.go` |
 | 6 | 列表/标题/作者/按钮的具体锚点 | 集中在 `internal/selector` | `internal/selector/*.go` |
 
-以上 6 项都在 `testdata/` 快照到位后一次性定稿，其中 1–3、6 是 spec 6 已列出的前置任务，4–5 是本架构在缺乏快照时所作的默认选择。
+以上 6 项都在 `testdata/` 快照到位后一次性定稿，其中 1–3、6 是 spec 6 已列出的前置任务；第 4 项已随 spec 3.7 修订定稿，仅余锚点确认；第 5 项是本架构在缺乏快照时所作的默认选择。
+
+> **spec 同步状态**：spec 3.7 已按需求方确认重写（单击即完整、并存优先级、整篇拼接后二次判定）；spec 4.1 已补增量语义边界。当前架构与 spec 无已知冲突。
 
 ---
 
