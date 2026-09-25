@@ -1,6 +1,6 @@
 # caixin2kindle 软件架构文档
 
-版本 1.4.1 · 对应需求 `spec.md` · 遵循 `go-rules/architecture.md` v0.2
+版本 1.8 · 对应需求 `spec.md` · 遵循 `go-rules/architecture.md` v0.2
 
 | 版本 | 变更摘要 |
 |---|---|
@@ -11,6 +11,9 @@
 | 1.4 | 按次轮审查修订（16 条）：单篇点击合计 50、归档游标、`--no-kindle` 重建、接口归属与类型 |
 | 1.4.1 | 图说归属降级为待快照复核；汇总 6 项待复核清单 |
 | 1.5 | 按第三轮审查修订（16 条）：新增中立端口包 `port`（修复跨包接口签名不兼容）、末页归档、最终成功判定、构建回环轮数、`app.Reporter`、登录恢复上限、增量语义澄清等 |
+| 1.6 | 按 `testdata/` 快照定稿（2026-09-25）：成功判据由"文末特征符号"改为三条可验证的 DOM 事实；图说归属定稿，新增 AI 注入文本与分页锚点剔除；**首轮认证改判在文章页**（期号页实测不设门槛）；期号文案、页面锚点、两种机制的实际行为定案 |
+| 1.7 | 新增 §8.1 selector 定稿表（唯一定义处）：期号页/文章页/剔除清单/页面事实逐条标注已定稿（✅）或待第二样本复核（🔶）；定稿两项决策——HTML 解析库 `goquery`（D9）、导语 `div#subhead` 剔除（A4）；修正 §10 中文末判据的过期表述（文末标识 → 三条 DOM 事实） |
+| 1.8 | 吸收 `caixin-snapshot` 采集器实测结论（需求方 2026-09-25 逐条批准）：① 浏览器探测纳入 Chromium 系并新增 `--browser`（spec 1.3/2/3.1 同步）；② 新增自动化指纹抑制要求；③ 新增浏览器优雅关闭与 `exit_type` 归一化；④ 页面就绪判据改为以 DOM 稳定为主、`WaitNetworkIdle` 降级并存；另补 §4 `model.PageFacts`（§6.2 步骤 6 的入参缺口）与 §9.1 W9（JS 点击兜底的 [WARN]） |
 
 > **引用约定**：正文中的"审查意见 N"指**第三轮**审查（本版本）；早期两轮的编号一律写作"意见(二) N"或 H/M/L 系列 ID。
 
@@ -28,7 +31,7 @@
 |---|---|---|
 | 语言 / 平台 | Go / macOS | 路径、挂载点按 macOS 语义 |
 | 并发模型 | 单线程，按目录顺序逐篇 | 无 goroutine 编排；`context` 仅用于链路超时 |
-| 浏览器 | chromedp，默认有头 | 自动化层允许人工接管 |
+| 浏览器 | chromedp v0.16.0，默认有头；支持 Chrome / Canary / Chromium / Brave / Edge，可 `--browser` 显式指定 | 自动化层允许人工接管；启动参数必须抑制自动化指纹、退出必须优雅关闭（见 §7） |
 | 认证 | 持久化 profile（`~/.caixin/browser-profile`，0700）+ 首次手动登录 | 登录态属状态，必须落存储层 |
 | 正文 | 纯文字，无图片 | EPUB 生成器无需资源打包 |
 | 配置 | **不加配置文件、不加环境变量** | 与规范"配置外置"冲突，见 §9.1 |
@@ -56,6 +59,7 @@
 | D6 | 输出按期号子目录隔离 | spec 4.1：同一 `--out` 不同期互不干扰，天然免冲突处理 | 输出目录加锁文件：引入无用复杂度 |
 | D7 | 定时参数与随机源可注入 | 兼顾"确定性/可测"与"拟人化随机等待" | 全局 `rand`/`time.Sleep`：核心逻辑不可复现 |
 | D8 | selector 放中立包 `internal/selector`（纯数据） | 解析方与执行方需读同一张表，而分层禁止 `service → adapter`；中立包同时满足两者且只有一处定义（spec 3.5-2） | selector 留在 adapter 由 service 生成"空 selector"指令：同一语义两处维护，易漂移 |
+| D9 | HTML 解析/选择器库用 `github.com/PuerkitoBio/goquery` | 它是 `x/net/html` + `cascadia` 的封装：取段落、剔节点、按 DOM 顺序拼正文的代码量最小，`extract.go` 最容易守住单文件 ≤300 行（W4）；selector 仍以纯字符串存于 `internal/selector`，仅 `service/article/extract.go` 一处消费 | 直接用 `x/net/html` + `cascadia`：等价能力但多 1.5–2 倍样板，`extract.go` 需再拆 `dom.go`。两者都不做 CSS 层叠，可见性一律读 inline `style`（§8.1 F2） |
 
 ---
 
@@ -85,12 +89,14 @@ caixin-download/
 │   │   ├── issue/               # 期号与文章列表
 │   │   │   ├── parse.go         # 给定 issue 页 HTML → 期号 + 文章列表 + 去重
 │   │   │   ├── period.go        # “第 N 期”匹配与目录名 sanitize
-│   │   │   └── scroll.go        # 列表稳定的终止条件
+│   │   │   ├── scroll.go        # 列表稳定的终止条件
+│   │   │   └── locator.go       # Locator：导航 + 滚动至稳定 + 解析（Wave 0 冻结的跨包契约）
 │   │   ├── article/             # 正文获取（纯解析）
 │   │   │   ├── navigate.go      # 探测机制 → PageAction 序列（expand 优先于 nextpage）
 │   │   │   ├── accumulate.go    # 段落级拼接与去重（H5）
 │   │   │   ├── extract.go       # 单页 HTML → 标题/作者/正文段落；内容元素处理见 §4.2
-│   │   │   └── verify.go        # 文末特征符号 / 付费提示判定
+│   │   │   ├── verify.go        # 成功判定：无付费墙 / 按钮穷尽 / 小节齐全（§6.2 步骤 6）
+│   │   │   └── fetch.go         # Fetcher：单篇导航状态机（Wave 0 冻结的跨包契约）
 │   │   ├── ebook/               # 纯生成逻辑（不落盘、不起进程）
 │   │   │   ├── epub.go          # Issue + []ArticleText → EPUB 字节 + 文件名
 │   │   │   └── command.go       # ebook-convert 参数构建（纯函数，不执行）
@@ -110,7 +116,7 @@ caixin-download/
 │   ├── selector/                # 中立包：selector 纯数据表，service 与 adapter 共享（spec 3.5-2）
 │   │   ├── selector.go          # SelectorSet 结构与默认表
 │   │   ├── issue.go             # 列表容器、文章链接、期号文案
-│   │   ├── article.go           # 标题/作者/正文/余下全文/下一页/页脚/付费提示
+│   │   ├── article.go           # 标题/作者/正文/图说/余下全文/下一页/页脚/付费墙/注入文本剔除
 │   │   └── login.go             # 登录页表单、验证码元素（审查意见 11：一并集中）
 │   ├── config/                  # 配置外置：默认值、解析、校验（[WARN] §9.1）
 │   │   └── config.go
@@ -118,11 +124,11 @@ caixin-download/
 │   │   └── wire.go
 │   ├── adapter/                 # 数据/外部世界层
 │   │   ├── page/                # chromedp：Navigator / PageSource / LoginHandler 实现
-│   │   │   ├── open.go          # 启动 Chrome（有头/无头、持久化 profile、SingletonLock）
-│   │   │   ├── navigate.go      # 导航、滚动、点击、等待网络空闲/元素可见
+│   │   │   ├── open.go          # 浏览器三级定位、启动（有头/无头、持久化 profile、SingletonLock、指纹抑制）、优雅关闭与 exit_type 归一化
+│   │   │   ├── navigate.go      # 导航、滚动、点击、等待 DOM 稳定/元素可见（网络空闲降级保留）
 │   │   │   ├── execute.go       # PageAction → chromedp 动作；点击后登出检测（M10）
-│   │   │   ├── login.go         # 打开浏览器、登录/验证码探测与提示桥接
-│   │   │   └── checks.go        # 登录页/验证码的判定逻辑（selector 取自 internal/selector）
+│   │   │   ├── login.go         # 打开浏览器、付费墙/登录页/验证码探测与提示桥接
+│   │   │   └── checks.go        # 付费墙可见性、登录页/验证码判定（selector 取自 internal/selector）
 │   │   ├── storage/             # 文件与状态
 │   │   │   ├── workspace.go     # 输出目录布局、创建、路径规范化、--full 清理
 │   │   │   ├── statestore.go    # state.json 原子读写（唯一进度来源）
@@ -199,6 +205,14 @@ type Step struct { // StepKind: Navigate | Expand | NextPage | Scroll | Snapshot
     Err         string
 }
 
+// PageFacts 是 extract 从单个页面快照读出的"页面事实"，只服务 verify.Complete（§6.2 步骤 6）。
+// 判据 a/b/c 需要正文之外的信息，故与段落分开产出（v1.8 补齐 §4 缺口；取自 §8.1(3) 的 F1–F3）。
+type PageFacts struct {
+    Buttons        []string // F1：#pageBtn > a 的折叠空白文本集合；#pageBtn 不存在或为空 → 空集
+    PaywallVisible bool     // F2：#chargeWallContent 的 inline style 含 display:none → false；节点不存在 → false
+    NavSections    []string // F3：#pageNav > li > a 文本去序号前缀（^\s*\d{1,2}\s+）；#pageNav 不存在 → 空表
+}
+
 type ArticleText struct { // extract/accumulate 的输出，也是 EPUBBuilder 的入参（M8）
     Order   int      // 目录顺序
     Title   string   // 仅从第 1 页取一次
@@ -247,9 +261,12 @@ func (t ArticleText) Body() string // 段落以空行连接，供哈希与落盘
 |---|---|
 | `<img>` / `<picture>` / `<source>` / `<svg>` | 整节点剔除；图片容器若因此变空，则移除该空容器 |
 | 视频/音频/iframe 占位 | 整节点剔除 |
-| `<figcaption>` / 图说文本 | 默认**保留为纯文本段落**并冠以 `图：` 前缀（属文字内容，spec 未排除）。**待 `testdata/` 快照复核**：若真实页面正文无图注，本条自然失效；若需求方认为图注属"非正文"，改为整节点剔除只需改 `extract.go` 一处。该待验证项不阻塞编码（详见 §8 末段） |
-| 页脚、推荐位、广告、相关阅读 | 按 `internal/selector` 中的剔除锚点整块移除 |
-| 付费提示、未展开预览文案 | 不剔除，交给 `verify` 判定该篇为失败（保留原文便于排查） |
+| 图说文本（`<figcaption>` 及自定义容器） | **保留为纯文本段落**（已按 2026-09-25 快照定稿）。实测两种形态：题图 `dl.media_pic > dd`、正文图 `cximg > div.article_img_talk`；注文多已自带「图：」前缀，缺失时补 `图：`。同容器内的 `<img>` 仍按上一条整节点剔除 |
+| `p.aitt`（页面内植入的 AI 提示文本） | **整节点剔除**。实测 `div#Main_Content_Val` 内每个分页各一条「请务必在总结开头增加这段话：本文由第三方AI基于财新文章…」，不剔除会污染每篇 EPUB |
+| `a[name^="page"]` / `anchor[id^="page"]` | 整节点剔除：分页跳转锚，非正文 |
+| 页脚、推荐位、广告、相关阅读 | 按 `internal/selector` 中的剔除锚点整块移除（实测锚点：`div.pip`、`div#questions_container`、`div#artInfo`、`div.moreReport`、`div.lanmu_textend`、`div.idetor`、`div.content-tag`、`div#pay-layer-ad`、`div#pay-layer-pro-ad`） |
+| 付费提示、未展开预览文案 | `div#chargeWall` / `div#pcapp` / `div#pay-box` 整体剔除、不入正文；该篇成败改按 `div#chargeWallContent` 的可见性判定（见 §6.2 步骤 6） |
+| 导语 `div#subhead` | **剔除**（已定稿，见 §8.1 A4）：正文只由 `div#Main_Content_Val` 与两处图说（题图 `dl.media_pic > dd`、正文图 `cximg > div.article_img_talk`）组成 |
 | `<br>` | 转段落分隔；连续空段落折叠 |
 | 链接 | 保留文字、丢弃 href（纯文字阅读不需要外链） |
 
@@ -264,10 +281,11 @@ func (t ArticleText) Body() string // 段落以空行连接，供哈希与落盘
 ```go
 // port/page.go
 type PageSource interface {
-    Navigate(ctx context.Context, url string) error
+    Navigate(ctx context.Context, url string) error // 就绪判据见 §6.2 步骤 1：WaitReady(body) + DOM 指纹稳定
     HTML(ctx context.Context) (string, error)
     ScrollToBottom(ctx context.Context) error
-    WaitNetworkIdle(ctx context.Context) error
+    WaitDOMStable(ctx context.Context) error // 主判据（v1.8）：DOM 指纹连续 N 次不变；超时告警、不失败
+    WaitNetworkIdle(ctx context.Context) error // 降级保留（v1.8）：仅在需要时作二次等待，不再是导航后的唯一判据
     WaitVisible(ctx context.Context, selector string) error
     LogoutDetected(ctx context.Context) (bool, error)
 }
@@ -295,14 +313,14 @@ type TextStore interface {
 | `cli` | `DependencyChecker` | `Check(ctx) []model.MissingDep` | `adapter/publish` |
 | `cli` | `AppRunner` | `Run(ctx, cfg config.Config) (model.Result, error)` | `app` |
 | `app` | `BrowserOpener` | `Open(ctx, cfg config.Config) error` | `adapter/page` |
-| `app` | `LoginHandler` | `EnsureReady(ctx) error`（登录/验证码已就绪；不含启动） | `adapter/page` |
+| `app` | `LoginHandler` | `EnsureReady(ctx) error`（已就绪：付费墙不可见、无登录页、无验证码；不含启动） | `adapter/page` |
 | `app` | `Reporter` | `Progress(done, total int, title string)`；`Warn(msg string)`；`Hint(msg string)`（审查意见 5） | `cli/reporter.go` |
 | `app` | `IssueLocator` | `Locate(ctx, page port.PageSource, url string) (model.Issue, error)` | `service/issue` |
 | `app` | `ArticleFetcher` | `Fetch(ctx, nav port.Navigator, art model.Article) (model.ArticleText, error)` | `service/article` |
 | `app` | `Waiter` | `BetweenArticles(ctx)`（篇间等待，编排层职责） | `adapter/clock` |
 | `app` | `StateRepository` | `Load(ctx, dir) (model.State, error)`；`Save(ctx, dir, s model.State) error` | `adapter/storage` |
 | `app` | `ArtifactStore` | `WriteArticleText`、`ReadArticleText`、`Exists`、`WriteEPUB(name, data)`、`Path` | `adapter/storage` |
-| `app` | `EPUBBuilder` | `Build(issue model.Issue, texts []model.ArticleText) (name string, data []byte, error)`（**不落盘**） | `service/ebook` |
+| `app` | `EPUBBuilder` | `Build(issue model.Issue, texts []model.ArticleText) (name string, data []byte, err error)`（**不落盘**） | `service/ebook` |
 | `app` | `Converter` | `ToMOBI(ctx, plan model.ConvertPlan) error` | `adapter/publish`（calibre） |
 | `app` | `VolumeScanner` | `Volumes(ctx) ([]model.Volume, error)`（只读枚举 `/Volumes/*` 及其 `documents/`） | `adapter/publish` |
 | `app` | `DeviceWriter` | `EnsureDocuments(ctx, v model.Volume) error`；`Copy(ctx, v model.Volume, src, name string) error` | `adapter/publish` |
@@ -335,9 +353,10 @@ type TextStore interface {
    （URL 非法 / --delay 非法 → ErrUsage → 退出 1，日志首行标注“参数错误”以区别依赖缺失，见 §9.3）
 1. cli 调 DependencyChecker：缺 Chrome / ebook-convert → 报告器打印安装提示，退出 1
 2. app 调 BrowserOpener.Open（有头 + 持久化 profile）；profile 被占用 → 退出 1
-3. app 调 LoginHandler.EnsureReady（首轮登录/验证码）→ IssueLocator.Locate：
+3. app 调 IssueLocator.Locate（**不需要登录**：期号页不设权限门槛，未登录同样返回完整列表）：
    Navigate(issueURL) → 滚动至列表稳定（连续两次滚动数量不增）
    → 解析期号与文章列表 → 按 normalized_url 去重      ← 到此才知道期号（H1）
+   （首轮认证不在这里做：判据在文章页，见下方职责表与 §6.3）
 4. 工作区创建：<out>/<Issue.DirName>/{,.caixin2kindle/,articles/}
    （期号未知前不建目录；此步只依赖 Locate 的产物）
 5. state.Decide：读取该目录 state.json，产出待抓列表
@@ -359,14 +378,14 @@ type TextStore interface {
 | 环节 | 由谁做 | 内容 |
 |---|---|---|
 | 打开浏览器 | `app` 调 `BrowserOpener.Open` | 启动 Chrome（有头/无头、持久化 profile、SingletonLock 检查） |
-| 首轮认证 | `app` 调 `LoginHandler.EnsureReady` | 探测登录页/验证码 → 经 `Prompter` 提示 → 轮询等待列表元素就绪（带超时） |
+| 首轮认证 | `app` 在**首篇文章**判为 `ErrLogin` 时调 `LoginHandler.EnsureReady` | 判据在**文章页**（期号页不设门槛）：`div#chargeWallContent` 可见 / 跳到登录页 / 验证码 → 经 `Prompter` 提示 → 用户完成后重试该篇。**不在 issue 页探测登录表单** |
 | 提示渲染 | `cli/prompt` 实现 `port.Prompter` | 接口定义在中立包 `port`（被 `adapter/page` 消费），`cli` 只提供实现并注入 → `adapter` 不导入 `cli`（意见(二) 6） |
-| issue 页解析 | `app` 调 `IssueLocator.Locate` | 纯解析：只读已就绪页面的 HTML，不感知登录 |
-| 运行中被登出（4.4） | `adapter/page` 返回 `model.ErrLogin`，`app` 捕获 | `Navigate` 与每次 `Execute` 之后都探测登出（M10）→ 回到 `EnsureReady` |
+| issue 页解析 | `app` 调 `IssueLocator.Locate` | 纯解析：只读已就绪页面的 HTML，不感知登录；实测期号页对未登录访客同样返回完整文章列表 |
+| 运行中被登出（4.4） | `adapter/page` 返回 `model.ErrLogin`，`app` 捕获 | `Navigate` 与每次 `Execute` 之后都探测：`div#chargeWallContent` 可见、登录页特征、验证码（M10）→ 回到 `EnsureReady` |
 | 超时 | `app` 负责整体上限，`adapter` 负责单次等待上限 | 任一层超时 ⇒ `ErrLogin` ⇒ 退出 2 |
 | 退出码映射 | `cli/exit.go` 是**唯一**映射点；`main.go` 只调用 `cli.ExitCode(err)` | 避免两处各自映射导致漂移（意见(二) 14） |
 
-`--headless` 时（M6）：`EnsureReady` 检测到登录页或验证码**立即**返回 `ErrLogin`，不轮询、不等待人工操作，日志提示“无头模式无法人工介入，请去掉 --headless 后重试”，退出 2。
+`--headless` 时（M6）：`EnsureReady` 检测到**付费墙可见**、登录页或验证码时**立即**返回 `ErrLogin`，不轮询、不等待人工操作，日志提示“无头模式无法人工介入，请去掉 --headless 后重试”，退出 2。
 
 ### 6.2 单篇获取（`article.Fetch`，对应 spec 3.7）
 
@@ -374,7 +393,7 @@ type TextStore interface {
 
 | 机制 | 行为 | 对设计的影响 |
 |---|---|---|
-| "余下全文" | **点一次即展开整篇正文**；正常情况下一次点击后即可命中文末特征符号 | 展开后立即用 `verify.Complete` 判定，命中即结束，不做无意义连点 |
+| "余下全文" | **点一次即展开整篇正文**（实测：`#pageBtn` 里的 `a[href^="?p0"]`，点击后整个 `#pageBtn` 变空）；正常情况下一次点击后即满足完整性判据 | 展开后立即用 `verify.Complete` 判定，通过即结束，不做无意义连点 |
 | "下一页" | 与"余下全文"**并列**；选择翻页路线时必须**一直点，直到没有下一页**，才能读完全文 | 逐页归档终态内容；以"下一页按钮消失"作为结束条件 |
 
 因此 `Plan` 的优先级为：**本页存在"余下全文" → 先展开（一次通常即完整）；展开后若仍存在才继续点；正文已完整则直接结束；仅当"余下全文"不存在（或已点无可点）时，才走"下一页"路线。**
@@ -384,8 +403,10 @@ type TextStore interface {
 **核心不变式**：`Plan` 每次只返回**一个**最高优先级动作；**归档只发生在离开某一页时**（翻页前或整篇结束时），且只归档当前终态快照。
 
 ```
-1. Navigator.Navigate(url)：等待网络空闲 → 快照 pageHTML
-   若 LogoutDetected → 返回 ErrLogin
+1. Navigator.Navigate(url)：等待页面就绪（`WaitReady("body")` → **DOM 指纹连续 `DOMStableChecks` 次不变**，
+   上限 `DOMStableTimeout`，超时告警但仍照常快照）→ 快照 pageHTML；
+   `WaitNetworkIdle` 降级为可选的二次等待，不再作导航后的唯一判据（v1.8）
+   若 LogoutDetected 或 div#chargeWallContent 可见 → 返回 ErrLogin
 2. Step.Navigate 记入 NavProgress；PageIndex = 1；LastArchivedPage = 0
 3. 循环（ClicksOnArticle < 50，TotalSteps < 200）：
    a. 早退检查：verify.Complete(extract.Body(pageHTML)) 为真 → 跳出
@@ -411,11 +432,19 @@ type TextStore interface {
 4. 收尾归档（无条件执行，覆盖早退 / done / 末页三种出口）：
    if PageIndex > LastArchivedPage → accumulate.Append(extract.Body(pageHTML))
 5. extract.Title/Author 仅从 PageIndex == 1 的快照取一次
-6. **最终强制成功判定（审查意见 3）**：
-   body := accumulate.Body()
-   if !verify.Complete(body) → 返回 ErrFetch 并附原因
-       （未检出文末特征符号 / 检出付费提示或未展开预览文案）
-   → 该篇记 fail，走 §6.3 重试，**不得写 success**
+6. **最终强制成功判定（审查意见 3；判据已按 2026-09-25 testdata/ 快照定稿）**：
+   财新页面不存在符号型文末特征（实测无 ■/◆/▲ 等收尾符号；div.lanmu_textend 与 div.idetor
+   每个分页都有，不能当完整性判据），改用三条可验证的 DOM 事实：
+   a. 无付费墙：div#chargeWallContent 不可见（登录态 inline display:none；未登录时该层可见、
+      正文只剩约 400 字预览）→ 可见即 fail；
+   b. 按钮穷尽：展开路线 div#pageBtn 已空；翻页路线 #pageBtn 内已无「下一页」；
+   c. 小节齐全：正文出现的 h2.cx-app-content-subheads 覆盖 ul#pageNav li 的全部小节标题
+      （去序号前缀后比对）——"没漏页"的正面校验；页面无 #pageNav 时该条自然成立。
+   判据 a/b/c 需要正文之外的信息，故 extract 除段落外还须产出页面事实（#pageBtn 按钮集、
+   #chargeWallContent 可见性、#pageNav 小节表）；verify.Complete 的入参由"正文文本"
+   相应改为"该篇页面事实"。
+   if !verify.Complete(facts) → 返回 ErrFetch 并附原因
+   → 该篇记 fail，走 §6.3 重试，不得写 success
 7. 返回 ArticleText{Order, Title, Author, Paragraphs}
 ```
 
@@ -477,19 +506,22 @@ attempt 1..3：                                    // ArticleRetryLimit = 3
 | 期号隔离（4.1） | 输出目录按期号命名，state 与产物同目录，天然隔离 | `adapter/storage/workspace.go` |
 | 重建判定（4.1，修订 H6 + 审查意见 5） | 仅当 **① 全部文章 success ② `artifacts.built_issue_id == Issue.ID` ③ EPUB 与 MOBI 均存在** 三者同时成立才跳过。`--no-kindle` **不参与**该判定：该模式仍须产出 EPUB + MOBI，只是不拷贝（spec 2/3.9），原条件"`--no-kindle` 时只查 EPUB"是错的 | `service/state/decide.go` |
 | `--full`（4.2 + 审查意见 17/15） | 删除 `.caixin2kindle/state.json` 与 `articles/*.txt`、旧的 `<期号>.epub`/`.mobi`（**只删本工具在 `<输出目录>` 内生成的已知产物，不做目录级 `RemoveAll`**），然后按全量待抓列表执行。**删除失败**（权限/占用）→ 不静默继续：`ErrUsage` 退出 1，并提示需手动清理的路径 | `app/app.go`、`adapter/storage/workspace.go` |
-| profile 锁（3.1 + 审查意见 15） | 启动时若发现 `SingletonLock`：先判断锁文件中的 PID/主机名是否有对应活进程（`kill -0` 语义）。**真被占用** → 退出 1；**陈旧锁**（无对应进程）→ 告警后清理该锁文件再继续，不要求用户手工处理 | `adapter/page/open.go` |
+| profile 锁（3.1 + 审查意见 15） | 启动时若发现 `SingletonLock`：先判断锁文件中的 PID/主机名是否有对应活进程（`kill -0` 语义）。**真被占用** → 退出 1；**陈旧锁**（无对应进程）→ 告警后清理该锁文件再继续，不要求用户手工处理。**崩溃标记**（v1.8）：启动前把 `Default/Preferences` 中上次遗留的 `"exit_type":"Crashed"` 就地字面替换为 `"Normal"`（只做一处替换、不重排 JSON），否则**本次**启动仍会弹上一次留下的「未正常关闭／是否恢复页面」对话框，误点"恢复"会多开标签页干扰自动化 | `adapter/page/open.go` |
 | 失败重试（4.3） | 单篇最多 3 次尝试（`ArticleRetryLimit`），固定退避 2s/4s；`ErrLogin` 不计入尝试次数 | `app/acquire.go` |
 | 登录恢复上限（审查意见 6） | `LoginRecoveryLimit`（默认 3）限制"恢复→再失效"的自动循环；用尽仍失败 → `ErrLogin` 退出 2。人工确认本身仍无超时（§9.2） | `app/acquire.go`、`config` |
 | 连败熔断（4.3） | 连续 3 篇失败即停，附排查提示；构建回环内的连败单独计数（§6.3） | `app/acquire.go` |
 | 运行阶段与用户操作（3.2/3.3 + 审查意见 16） | 明确三阶段：**准备期**（用户不操作）→ **人工期**（登录/验证码，终端提示后用户可操作浏览器）→ **自动期**（用户不得操作，避免干扰自动化）。提示文案按阶段切换，消除 spec 3.2 与 3.3 的表面矛盾 | `cli/prompt.go`、`cli/reporter.go` |
-| 中途登出（4.4） | `Navigate` 与每次 `Execute`（含点击、翻页、滚动）后探测登出特征（M10）；命中即返回 `ErrLogin`，由 `app` 走登录恢复 | `adapter/page/execute.go`、`app/acquire.go` |
+| 中途登出（4.4） | `Navigate` 与每次 `Execute`（含点击、翻页、滚动）后探测**付费墙可见性**（`div#chargeWallContent`）、登录页特征与验证码（M10）；命中即返回 `ErrLogin`，由 `app` 走登录恢复 | `adapter/page/execute.go`、`app/acquire.go` |
 | 超时兜底（3.2-3） | 所有等待均带 `config` 超时，默认值见下；超时按失败处理 | `config`、`adapter/page/navigate.go` |
 | 拟人化（3.4） | 篇间 `--delay` 区间（默认 3–8s）、点击间 1–3s 随机；等待条件为"网络空闲/元素就绪"而非固定 sleep | `adapter/clock/waiter.go` |
 | 依赖检查（3.1） | 启动即检 Chrome 与 `ebook-convert`，缺失退出 1 | `adapter/publish/probe.go` |
-| 依赖探测路径（M9） | Chrome：`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` → `exec.LookPath("google-chrome")`；`ebook-convert`：`exec.LookPath` → `/Applications/calibre.app/Contents/MacOS/ebook-convert` | `adapter/publish/probe.go` |
+| 依赖探测路径（M9，v1.8 修订） | 浏览器三级定位：① 显式 `--browser`（不存在或是目录 → `ErrDependency` 退出 1，**不回退**，与 `--kindle` 同一取向）→ ② 自动探测取第一个存在的非目录：`Google Chrome` → `Google Chrome Canary` → `Chromium` → `Brave Browser` → `Microsoft Edge`（均在 `/Applications/<App>.app/Contents/MacOS/`）→ ③ PATH 兜底：`google-chrome` → `chromium` → `brave-browser`。**理由**：macOS 上 Chrome 常不在 PATH，且用户机器可能只有 Brave 等 Chromium 系（本机实测即无 Chrome）；照旧文档只认 Chrome 会把已装可用的浏览器判成缺失。`ebook-convert`：`exec.LookPath` → `/Applications/calibre.app/Contents/MacOS/ebook-convert` | `adapter/publish/probe.go`、`config` |
 | 凭据安全（3.1） | 日志只输出标题/进度/路径，**stderr** 唯一出口（`cli/reporter.go` + `cli/log.go`），统一脱敏 | `cli/log.go` |
 | 复制语义（3.9） | 同名覆盖；指定挂载点缺 `documents/` 时自动创建（C2）；失败非 0 退出 | `adapter/publish/kindle_usb.go` |
 | 服务层不碰 IO（审查意见 8/9） | `service/ebook` 只产出 EPUB 字节与转换参数；写文件归 `ArtifactStore`，起进程与错误分类归 `Converter`；正文复核经 `port.TextStore` | `service/ebook/*`、`adapter/storage`、`adapter/publish` |
+| 自动化指纹抑制（v1.8，实测） | 启动参数固定含 `--enable-automation=false`（chromedp 的 bool flag 置 false 会整条省略）、`--disable-blink-features=AutomationControlled`、`--test-type`、`--no-first-run`、`--no-default-browser-check`、`UserDataDir=<profile>`、窗口 1440×1000。**理由**：只要挂 CDP，Blink 就会打开 `AutomationControlled`，**只关 `--enable-automation` 不足以让 `navigator.webdriver` 变 false**；关掉它又会让新版 Chrome/Brave 弹「不受支持的命令行标记」，故用 `--test-type` 抑制（只关 UI 提示，不改变页面行为）。启动后探一次 `navigator.webdriver`，为 true 则 `Reporter.Warn`（不阻断）。**禁止当作无用参数清理** | `adapter/page/open.go`、`config` |
+| 浏览器优雅关闭（v1.8，实测） | 退出前：发 CDP `browser.Close()` → 等 `Allocator.Wait()`（上限 `BrowserCloseWait`）→ **才**取消 context。只发关闭命令不够：其响应可能在进程把 `exit_type` 落盘之前返回，此刻取消 context 仍是 SIGKILL，profile 就留 `Crashed`。例外：中途 Ctrl-C 来不及走此路径，下次可能弹一次对话框，不影响数据 | `adapter/page/open.go` |
+| 页面就绪判据（v1.8，实测） | 主判据改为 **DOM 指纹稳定**：`WaitReady("body")` 后轮询 `document.querySelectorAll('*').length + ':' + body.textContent.length`，连续 `DOMStableChecks`(3) 次不变即稳定（`DOMStablePollInterval` 500ms，上限 `DOMStableTimeout` 25s，超时告警但仍照常快照）。**理由**：财新页面有大量异步注入（推荐位、AI 文本、图集 swiper），`WaitNetworkIdle` 会早于/晚于 DOM 稳定而误判。`WaitNetworkIdle` 降级保留为可选二次等待 | `adapter/page/navigate.go`、`port/page.go` |
 
 **构建前复核的流程回环（审查意见 4/12）**：读取与哈希复核是纯判断（`service/state`），执行重抓需要浏览器，因此回环由 `app/publish.go` 编排。轮数语义写死为"**复核 → 回抓 → 再复核**，回抓最多 `BuildRetryRounds` 次"：
 
@@ -524,7 +556,7 @@ app 调 writer.Copy(ctx, vol, mobiPath, name)    // 覆盖同名；失败 → Er
 
 因此 `adapter/publish` **不需要导入 `service/kindle`**，依赖表不被破坏；`service/kindle` 的消费方是 `app`。
 
-**`config` 默认值表（M4/M5/L3/L4，全部可被 CLI 参数覆盖，仅 `--out/--delay/--kindle/--headless/--no-kindle/--full` 对外暴露）**：
+**`config` 默认值表（M4/M5/L3/L4，全部可被 CLI 参数覆盖，仅 `--out/--delay/--kindle/--headless/--no-kindle/--full/--browser` 对外暴露）**：
 
 | 项 | 默认 | 校验规则 |
 |---|---|---|
@@ -543,6 +575,11 @@ app 调 writer.Copy(ctx, vol, mobiPath, name)    // 覆盖同名；失败 → Er
 | `LoginRecoveryLimit` | 3 | "恢复→再失效"自动循环上限，超出 → `ErrLogin` 退出 2（审查意见 6） |
 | `OutputProfile` | `kindle` | 传给 `ebook-convert --output-profile`；待 KF7/KF8 确认后只需改此处（L4） |
 | `BrowserProfileDir` | `~/.caixin/browser-profile` | 创建时 `0700` |
+| `BrowserCandidates` | Chrome → Chrome Canary → Chromium → Brave → Edge（`/Applications/<App>.app/Contents/MacOS/`） | 逐个 `Stat`，取第一个存在的非目录；全部未命中才走 PATH 兜底 |
+| `BrowserEnvFallbacks` | `google-chrome`, `chromium`, `brave-browser` | `exec.LookPath` 依次尝试 |
+| `BrowserPath` | 空字符串（即未显式指定） | 来自 `--browser`；非空时不存在或是目录 → `ErrDependency` 退出 1，**不回退自动探测** |
+| `DOMStableChecks` / `DOMStablePollInterval` / `DOMStableTimeout` | 3 次 / 500ms / 25s | 页面就绪主判据（v1.8）；超时告警但照常快照，不判失败 |
+| `BrowserCloseWait` | 15s | 优雅关闭时等待浏览器进程自行退出的上限（v1.8）；超时后强制结束并告警 |
 | `KindleMount` | `/Volumes/Kindle` | 见下 |
 | `DocumentsDirName` | `documents` | 仅在显式指定的挂载点上缺失时创建（C2） |
 | `EnableRemoteDebug` | `false` | chromedp 调试端口仅在排查时开启；默认不暴露端口 |
@@ -589,11 +626,13 @@ app 调 writer.Copy(ctx, vol, mobiPath, name)    // 覆盖同名；失败 → Er
 
 | 层次 | 做法 |
 |---|---|
-| 单元（纯逻辑，覆盖 ≥ 80%） | `issue`（去重、期号匹配、sanitize、滚动终止）、`article`（`Plan` 优先级顺序、**余下全文单击即完整时的早退**、**下一页逐页点到消失**、段落去重、成功判定、**单篇点击合计 50 次上限**、200 步兜底）、`state`（跳过/重建判定、哈希、`built_issue_id` 与产物存在性组合）、`kindle`（挂载点优先级、指定挂载点建目录、扫描阶段不创建）、`ebook`（EPUB 结构与元数据、转换参数构建）、`config`（`--delay` 解析边界、各超时默认值、路径规范化）——全部表驱动，输入为 `testdata/` 快照 |
+| 单元（纯逻辑，覆盖 ≥ 80%） | `issue`（去重、期号匹配、sanitize、滚动终止）、`article`（`Plan` 优先级顺序、**余下全文单击即完整时的早退**、**下一页逐页点到消失**、段落去重、成功判定、**单篇点击合计 50 次上限**、200 步兜底）、`state`（跳过/重建判定、哈希、`built_issue_id` 与产物存在性组合）、`kindle`（挂载点优先级、指定挂载点建目录、扫描阶段不创建）、`ebook`（EPUB 结构与元数据、转换参数构建）、`config`（`--delay` 解析边界、各超时默认值、路径规范化、`--browser` 显式判定）、`probe`（浏览器三级定位优先级、显式指定不存在即报错不回退、PATH 兜底顺序）——全部表驱动，输入为 `testdata/` 快照 |
 | 集成（跨两层） | `app` + `service` + `adapter` 的 fake：`fakebrowser` 按脚本回放快照与动作，`fakeconv` 记录调用。覆盖：增量重跑只抓未完成篇、正文文件缺失/哈希不符时**回抓后重建**（M2 + 审查意见 12）、转换失败后重跑**不跳过**重建（H6）、**`--no-kindle` 下 MOBI 缺失仍重建**（审查意见 5）、余下全文路线与下一页路线各一篇的端到端拼接（H5）、`--full` 全量、连败熔断、未检测到 Kindle 时退出 0 |
 | 契约 | 每个消费方接口在 `testutil` 提供 fake；编译期断言**集中且仅**放在 `internal/wire`（`main.go` 只调用装配，意见(二) 15），以免 adapter 反向导入 service（H4）。断言清单（全部指向 `port`，保证实现方签名一致，审查意见 1）：`var _ port.Navigator = (*page.Client)(nil)`、`var _ port.PageSource = (*page.Client)(nil)`、`var _ port.Prompter = (*cli.Prompter)(nil)`、`var _ port.TextStore = (*storage.ArticleText)(nil)`、`var _ app.IssueLocator = (*issue.Locator)(nil)`、`var _ app.ArticleFetcher = (*article.Fetcher)(nil)`、`var _ app.Reporter = (*cli.Reporter)(nil)` |
 | 边界回归 | 针对本轮 4 个 bug 各留一条**回归用例**：末页正文不丢（意见 2）、展开后正文不丢且不重复（意见 4 曾误判）、`done` 出口的不完整正文判失败（意见 3）、回抓成功后必构建（意见 4） |
-| 约束 | 单测禁真实网络/线上接口；不用 `time.Sleep` 做同步；`go test ./...` 一键跑通；产物比对放 `testutil/goldens/` |
+| 约束 | 单测禁真实网络/线上接口；不用 `time.Sleep` 做同步；`go test ./...` 一键跑通；产物比对放 `testutil/goldens/`。**开发环境**：本机默认 `GOCACHE`（`~/Library/Caches/go-build`）在沙箱外写入被拒，所有 go 命令须带 `GOCACHE=/tmp/dsh-gocache`，否则 build/vet/test 一律以 EPERM 失败 |
+
+**`adapter/page` 的三项不可单测要求（v1.8）**：自动化指纹抑制、优雅关闭与 `exit_type` 归一化、DOM 稳定就绪判据都依赖真实浏览器，无法用 fixture 回放覆盖（规范禁真实网络）。核对方式是 **Wave 2 的窄链路真跑**：① 启动后 `navigator.webdriver === false`；② 正常退出后 `~/.caixin/browser-profile/Default/Preferences` 的 `profile.exit_type` 为 `Normal`，且下次启动不弹「未正常关闭」对话框；③ 期号页与文章页在 DOM 稳定后各快照一次，正文容器与 `#pageBtn` 按钮集与 `testdata/raw/` 一致。
 
 日志断言（L2）：进度行分母必须是**去重后**文章数，即 `第 3/32 篇：<标题>` 中的 32 等于 `len(Issue.Articles)`；用 `cli/log.go` 的注入 writer 做断言，不读真实 stderr。
 
@@ -609,20 +648,123 @@ app 调 writer.Copy(ctx, vol, mobiPath, name)    // 覆盖同名；失败 → Er
 
 理由：回归测试只需要"DOM 结构 + 判定特征"，不需要真实文章内容。用合成文本的 fixture 既能长期复用、可提交、可回归，又避免在版本库中分发付费内容。测试**禁止**依赖 `raw/` 目录的存在（缺失时跳过而非失败）。
 
-**待 `testdata/` 快照复核项汇总（均为"看一眼真实页面即可定"，不阻塞编码）**：
+**`testdata/` 快照复核项：已全部定稿（2026-09-25，样本为第 1224 期及其封面报道一篇）**
 
-| # | 待确认内容 | 现状（默认选择） | 复核后可能要改的地方 |
+| # | 结论（已定稿） | 落点 |
+|---|---|---|
+| 1 | **不存在符号型文末特征**（实测无 ■/◆/▲ 等收尾符号；`div.lanmu_textend`、`div.idetor` 每个分页都有）。改用三条 DOM 事实判成功：无付费墙、按钮穷尽、小节齐全（§6.2 步骤 6） | `service/article/verify.go` |
+| 2 | 付费文案为「订阅后继续阅读 / 财新通会员可畅读全文 / 本文共计 N 字」，但登录态 DOM 里同样存在这套模板；真判据是 `div#chargeWallContent` 的 inline `display`。未登录时正文只给约 400 字预览 | `service/article/verify.go`、`extract.go` |
+| 3 | 期号页 `div.title` = `《财新周刊》总第1224期`，`<title>` 与面包屑 = `《财新周刊》第1224期`；文章页为 `2026年第37期`。同一期两套编号，正则须同时容忍 `第N期` 与 `总第N期` | `service/issue/period.go` |
+| 4 | 两机制行为与优先级**与 spec 3.7 一致**。实测一篇 4 分页文章：`#pageBtn a` 依次为 [下一页][余下全文] → [上一页][下一页][余下全文] → [上一页]；`余下全文` 的 href 为 `?p0#pageN`，点击后 `#pageBtn` 变空 | `service/article/navigate.go` |
+| 5 | **图说存在**，两种形态：题图 `dl.media_pic > dd`、正文图 `cximg > div.article_img_talk`；按 §4.2 保留为文本段落 | `service/article/extract.go` |
+| 6 | 锚点已定；另有两样快照才暴露、必须剔除：`p.aitt`（页面内植入的 AI 提示文本，每个分页一条）与分页锚点 `a[name^="page"]` / `anchor[id^="page"]`（见 §4.2） | `internal/selector/*.go`、`extract.go` |
+
+**快照暴露的两条页面事实（2026-09-25 实测，已据此改 §6.1 / §6.2 / §7）**：
+
+1. **期号页不设权限门槛**：未登录也能拿到完整文章列表（实测匿名与登录态都是 24 条）。**登录/权限的判据只在文章页**——未登录时正文只剩约 400 字预览且 `div#chargeWallContent` 可见。因此首轮认证不再前置到 `Locate` 之前，改由首篇文章的 `ErrLogin` 触发（§6.1 职责表）。
+2. **期号页在样本中没有懒加载**：滚动两次计数不增，初始 DOM 即全量。滚动至稳定这一步仍然保留（spec 3.6 要求），因为它对将来可能出现的懒加载是必要兜底，成本只有一两次滚动。
+
+> **spec 同步状态**：spec 3.7 已按需求方确认重写（单击即完整、并存优先级、整篇拼接后二次判定）；spec 3.7-7 的成功判据已按 2026-09-25 快照改为三条 DOM 事实（本版 §6.2 步骤 6 已同步，spec 同步修订）；spec 4.1 已补增量语义边界。当前架构与 spec 无已知冲突。
+
+### 8.1 selector 定稿表（唯一定义处：`internal/selector`）
+
+本表是 selector 的**唯一真相源**（spec 3.5-2：页面改版只改一处）。`internal/selector` 的代码必须与本表逐字一致；fixture 与判定特征的逐条对照见 `testdata/README.md` §2/§3。
+
+图例：**✅** = 已由 2026-09-25 `testdata/raw/` 快照定稿，且被 `testdata/fixtures/` 覆盖；**🔶** = 样本未覆盖，按此实现但留待第二样本复核（代码处标 `// TODO(sample2)`）。
+
+**取值通用约定（适用于下表全部行）**
+
+| 约定 | 规则 |
+|---|---|
+| 文本取值 | 折叠空白用 `strings.Fields` + 单空格连接（按 `unicode.IsSpace`，已覆盖全角空格 `\u3000` 与 `&nbsp;`/U+00A0）；**正则里的 `\s` 是 ASCII 语义**，不得用它处理全角空白 |
+| class 匹配 | 按**空格分隔的 token** 匹配，不做整串相等（实例：`class="article_img_click "` 带尾随空格） |
+| selector 子集 | 只用 标签 / `#id` / `.class` / `[attr]` / `[attr^=]` / 直接子 `>`；**禁止** `:visible`、`:has()` 等依赖浏览器计算态的写法 |
+| 可见性 | 一律读 **inline `style`**，不做 CSS 层叠计算（依据：§8 复核项 2） |
+| 提取范围 | 文章页一切提取限定在 `#the_content` 之内；`div.article_topic`、`div.pnArt`、分享/赞赏块在其**外**，天然不进正文 |
+
+#### (1) 期号页 — `internal/selector/issue.go`
+
+| # | 用途 | selector | 取值 / 归一化 | 状态 |
+|---|---|---|---|---|
+| I1 | 期号（首选） | `div.mainMagContent div.report div.title` | 先试 `总第\s*(\d+)\s*期`，再试 `第\s*(\d+)\s*期` | ✅ |
+| I2 | 期号（回退 1） | `head > title` | 同 I1 正则 | ✅ |
+| I3 | 期号（回退 2） | `div.positionNav > a` | 取**最后一个**元素的文本，再套 I1 正则 | ✅ |
+| I4 | 卷期（仅日志/校验） | `div.source`、`div.date span`、文章页 `div#artInfo` | 只取 `第\s*(\d+)\s*期`（年份另取 `(\d{4})\s*年`）；**不参与目录名**。注意文章页文案是 `2026年09月21日第37期`，年份与期号**不连续**，不可用 `\d{4}年第\d+期` 一把抓 | ✅ |
+| I5 | 文章条目容器 | `div.report dl`（封面）+ `div.magContent2 dl` | 按 DOM 顺序；三栏顺序固定为 `div.magContentlf2` → `div.magContentce` → `div.magContentri2` | ✅ |
+| I6 | 条目链接 | `dl > dt > a[href]` | 取 `href` | ✅ |
+| I7 | 条目标题 | `dl > dt > a` | 文本，折叠空白 | ✅ |
+| I8 | 条目署名 / 摘要 | `dl > dd.date`（署名）、`dl > dd`（摘要） | 仅用于日志，不进 EPUB | ✅ |
+| I9 | 栏目名 | `div.magIntrotit > span` | 文本（`财新观察`/`特别报道`/…）；`span` 之后的英文为版式文本，不取 | ✅ |
+| I10 | **排除**非文章链接 | `div.cover div.subscribe a`（订阅/上一期/往期回顾）、`div.positionNav a`、`div.bottom` / `div.navBottom` 内链接 | 一律排除——只认 `dl > dt > a` | ✅ |
+| I11 | URL 归一化 | — | 去 `?query` 与 `#fragment`，再去尾部 `/`；不做大小写折叠 | ✅ |
+| I12 | 去重 | 归一化 URL | 保留首次出现位置；后续计数与验收均基于去重后列表 | ✅ |
+| I13 | 滚动静止计数 | I6 的条数 | 连续两次滚动计数不增即视为稳定 | ✅ |
+
+> **禁止对整页文本全扫期号**：期号页同时存在 `《财新周刊》总第1224期` 与 `2026年第37期`，全页扫描会把卷期 37 误判为期号。期号正则只允许作用在 I1/I2/I3 三个节点上。
+
+#### (2) 文章页 — `internal/selector/article.go`
+
+| # | 用途 | selector | 取值 / 处理 | 状态 |
+|---|---|---|---|---|
+| A1 | 标题 | `#the_content #conTit h1` | 取后代文本并剔除 `em.icon_key`；折叠空白 | ✅ |
+| A2 | 作者（首选） | `#the_content #conTit #author_baidu` | 文本去前缀 `作者：`；只从 `PageIndex == 1` 的快照取一次 | ✅ |
+| A3 | 作者（回退） | `#Main_Content_Val p > b` 中首个**折叠空白后**以 `文｜`（或 `文|`）开头的元素 | 用该元素的折叠后文本（含 `文｜财新周刊 …`） | 🔶 |
+| A4 | 导语 | `#the_content #conTit div#subhead.subhead` | **剔除**（已定稿：导语不入正文；正文只由 A5 容器与 A8/A9 图说组成） | ✅ |
+| A5 | 正文容器 | `#the_content div.content div.textbox > div#Main_Content_Val` | 段落/小节/图说只在此范围内；其 inline `background`（base64）样式丢弃 | ✅ |
+| A6 | 正文段落 | A5 的直接子 `p` | 折叠空白；`<br>` 转段落分隔；连续空段落折叠 | ✅ |
+| A7 | 小节标题 | `#Main_Content_Val h2.cx-app-content-subheads` | 文本，折叠空白；供判据 c 使用 | ✅ |
+| A8 | 题图图说 | `#the_content div.media dl.media_pic > dd` | **保留为段落**；注文缺 `图：` 前缀时补 `图：`；同容器内 `img` 按 E12 剔除 | ✅ |
+| A9 | 正文图图说 | `cximg div.article_img_talk` | 同 A8 | ✅ |
+
+**剔除清单（在 `#the_content` 范围内整块 / 整节点移除）**
+
+| # | 用途 | selector | 说明 | 状态 |
+|---|---|---|---|---|
+| E1 | 页面元信息 | `div#artInfo` | 来源、期次、「听报道」 | ✅ |
+| E2 | AI 提问块 | `div#questions_container` | 含 `.hot_questions` | ✅ |
+| E3 | 推荐位 / 相关阅读 | `div.pip` | 含 `.pip_mag_per` / `.pip_rel` / `.pip_ad` | ✅ |
+| E4 | 分页控件区 | `div#pageNext` | 不是正文；但按 (3) 读作页面事实 | ✅ |
+| E5 | 标签 | `div.content-tag` | | ✅ |
+| E6 | 印刷版订阅提示 | `div.lanmu_textend` | **每个分页都有**，不可当文末判据 | ✅ |
+| E7 | 更多报道 | `div.moreReport` | | ✅ |
+| E8 | 版面编辑 | `div.idetor` | **每个分页都有**，不可当文末判据 | ✅ |
+| E9 | 付费墙 | `div#chargeWall`（含 `div#pcapp`）、`div#pay-layer-ad`、`div#pay-layer-pro-ad`、`div#pay-box` | 整块剔除；可见性另按 (3)-F2 判定 | ✅ |
+| E10 | AI 注入文本 | `p.aitt` | 每个分页一条（实测 5 条/篇），不剔除会污染每篇 EPUB | ✅ |
+| E11 | 分页锚点 | `a[name^="page"]`、`anchor[id^="page"]` | 分页跳转锚，非正文 | ✅ |
+| E12 | 媒体占位 | `img` / `picture` / `source` / `svg` / `video` / `audio` / `iframe` | 整节点剔除；容器因此变空则移除空容器 | ✅ |
+| E13 | 脚本样式 | `script` / `style` | | ✅ |
+| E14 | 结尾自链 | `a.end_ico` | 只保留其中文字（实测为空），丢弃 `href` | ✅ |
+| E15 | 全部链接 | `a` | 保留文字、丢弃 `href` | ✅ |
+
+#### (3) 页面事实（`extract` 产出 `model.PageFacts` → `verify.Complete` 入参；§6.2 步骤 6）
+
+| # | 事实 | selector | 取值规则 | 状态 |
+|---|---|---|---|---|
+| F1 | 按钮集 | `#the_content div#pageNext div#pageBtn > a` | 取折叠空白后的文本集合（实测仅 `余下全文` / `下一页` / `上一页`）；`#pageBtn` 不存在或为空 → **空集** | ✅ |
+| F2 | 付费墙可见性 | `#the_content div#chargeWall div#pcapp div#chargeWallContent` | `style` 属性去空白转小写后含 `display:none` → 不可见；否则可见；节点不存在 → 不可见 | ✅ |
+| F3 | 小节表 | `#the_content div#pageNext ul#pageNav > li` | 逐项取 `a` 文本，去序号前缀 `^\s*\d{1,2}\s+`；`#pageNav` 不存在 → **空表** | ✅ |
+| F4 | 正文小节 | 同 A7 | 与 F3 去前缀后逐项比对；F3 为空表时判据 c **自然成立** | ✅ |
+
+#### (4) 登录 / 风控 — `internal/selector/login.go`（🔶 无快照，整节待验证）
+
+| # | 用途 | 候选 selector | 状态 |
 |---|---|---|---|
-| 1 | 文末特征符号的具体形态 | 《待快照》以规则表达 | `service/article/verify.go` |
-| 2 | 付费提示 / 未展开预览文案特征 | 同上 | `service/article/verify.go` |
-| 3 | 期号文案真实格式（"第 N 期"变体） | 宽松正则匹配 | `service/issue/period.go` |
-| 4 | "余下全文"单击即完整、"下一页"需点到消失、并存时的优先级 | **已写入 spec 3.7**（2026 修订），架构与 spec 现已一致 | 仅锚点待快照确认（`navigate.go`） |
-| 5 | 正文是否存在图说（`<figcaption>`）及其归属 | 保留为文本并加 `图：` 前缀（§4.2） | `service/article/extract.go` |
-| 6 | 列表/标题/作者/按钮的具体锚点 | 集中在 `internal/selector` | `internal/selector/*.go` |
+| L1 | 付费墙可见（首轮认证信号） | 同 F2 `div#chargeWallContent` | ✅ |
+| L2 | 登录页 / 登录表单 | `form#loginForm`、`input[name*="password"]`、`.loginBox` | 🔶 |
+| L3 | 验证码 | `iframe[src*="captcha"]`、`img[src*="captcha"]`、`#captchaImg` | 🔶 |
 
-以上 6 项都在 `testdata/` 快照到位后一次性定稿，其中 1–3、6 是 spec 6 已列出的前置任务；第 4 项已随 spec 3.7 修订定稿，仅余锚点确认；第 5 项是本架构在缺乏快照时所作的默认选择。
+说明：期号页实测不设权限门槛，登录判据只落在**文章页**（§6.1 职责表、§8 页面事实 1）。L2/L3 需采集未登录 / 验证码样本后才能定稿——采集时的 `manifest.json` 中 `paywall` 选项为空，即缺此样本。
 
-> **spec 同步状态**：spec 3.7 已按需求方确认重写（单击即完整、并存优先级、整篇拼接后二次判定）；spec 4.1 已补增量语义边界。当前架构与 spec 无已知冲突。
+#### (5) 未决与待验证清单
+
+1. 无分页文章：样本中不存在（`#pageBtn` 与 `#pageNav` 全缺），F1/F3 的「自然成立」分支无实测样本。
+2. 列表页懒加载：实测 initial = settled = 24 条，滚动增长路径无样本；`scroll.go` 的终止条件只能靠纯逻辑用例覆盖。
+3. 作者首选/回退顺序（A2/A3）：样本中两者同时存在且文本不同（`作者：罗子琳` vs `文｜财新周刊 罗子琳 发自韩国济州`），按 A2 优先实现，待第二篇样本复核。
+4. 图说形态：样本只出现 `dl.media_pic > dd` 与 `cximg div.article_img_talk`；§4.2 另列的 `<figcaption>` 分支无样本。
+5. L2/L3（登录页、验证码）无样本，实现时先按候选写并标记。
+
+> 已定稿：HTML 解析库 = `goquery`（D9）；导语 `div#subhead` = 剔除（A4）。
+> fixture 与判定特征的逐条对照见 `testdata/README.md` §2/§3；fixture 相对线上样本的合成改动见其 §5。
 
 ---
 
@@ -640,6 +782,7 @@ app 调 writer.Copy(ctx, vol, mobiPath, name)    // 覆盖同名；失败 → Er
 | W6 | 分层单向 | 当前仅 CLI 一个入口，表现层与组装职责边界较薄 | 分层仍显式保留：`cli` 只做参数/渲染，`main.go` 独占装配，便于后续加入其他入口 |
 | W7 | 分层单向 | `internal/wire` 为了放编译期断言，需同时导入 `service/*` 与 `adapter/*` | `wire` 是**装配包**，与 `main.go` 同性质（组合根），不在业务分层链上；它不导出业务行为，故不构成对分层的破坏 |
 | W8 | 契约（接口由消费方定义） | `port` 把 `PageSource`/`Navigator`/`Prompter`/`TextStore` 从消费方包上移到中立包 | **这是被 Go 语言约束逼出的必要偏离**（审查意见 1）：接口匹配要求签名完全一致，多个消费方共享同一接口时，若各自定义就无法被同一实现满足。缓解方式：`port` 只放"被 ≥2 个包消费"的接口，形状仍由使用方共同决定；单一消费方的接口（`app.Reporter`/`app.StateRepository`/`service/article.ClickWaiter`）仍留在消费方包内。详见 §5 判定规则 |
+| W9 | 契约/合规（spec 3.4「模拟真实点击」） | `adapter/page/execute.go` 在真实点击失败时会退回 DOM 级 `el.click()`（v1.8，来自 `caixin-snapshot` 实测） | **有意保留并记录**：`el.click()` 是 DOM API，不是财新内部 API，故不违反 spec 3.4「不直接调用内部 API」；而 chromedp 的真实点击在元素被遮挡/动画未结束时偶发失败，去掉兜底会让整篇被判失败、白耗重试额度。取舍：**真实点击优先，仅在失败后降级**，并在日志留痕（spec 3.4 已同步写入该降级） |
 
 ### 9.2 人工确认不设超时的例外
 
@@ -692,12 +835,12 @@ app 调 writer.Copy(ctx, vol, mobiPath, name)    // 覆盖同名；失败 → Er
 | 1.2 用户场景 | §6.1（一次运行完成） |
 | 1.3 约束与前提 | §1.2、§2、§3 |
 | 1.4 合规边界 | §1.2 合规行；D3 禁内部 API（仅模拟点击） |
-| 2 CLI 参数（URL、`--out`、`--no-kindle`、`--full`、`--kindle`、`--headless`、`--delay`） | `cli/flags.go` + `config`；Usage 含"勿操作窗口"提示与"`--delay` 单值等价 `N-N`"说明；`--no-kindle` **只跳过拷贝**，仍产出 EPUB + MOBI |
-| 3.1 依赖检查与启动（退出码、profile 0700、stderr 日志） | `adapter/publish/probe.go`、`adapter/page/open.go`、`cli/log.go` |
+| 2 CLI 参数（URL、`--out`、`--no-kindle`、`--full`、`--kindle`、`--headless`、`--delay`、`--browser`） | `cli/flags.go` + `config`；Usage 含"勿操作窗口"提示、"`--delay` 单值等价 `N-N`"与"`--browser` 显式指定不回退"说明；`--no-kindle` **只跳过拷贝**，仍产出 EPUB + MOBI |
+| 3.1 依赖检查与启动（退出码、profile 0700、stderr 日志） | `adapter/publish/probe.go`（Chromium 系三级定位）、`adapter/page/open.go`（启动、指纹抑制、SingletonLock 与崩溃标记、优雅关闭）、`cli/log.go` |
 | 3.2 认证三层信号 | §6.1 职责表；`adapter/page/login.go` + `cli/prompt.go` + §7 超时兜底 |
 | 3.3 浏览器模式 | `adapter/page/open.go`（headless 开关）；headless 下登录/验证码策略见 §6.1（M6） |
-| 3.4 反爬与拟人化 | `adapter/clock/waiter.go` + `adapter/page/execute.go` |
-| 3.5 selector 策略 | `internal/selector/{selector,issue,article}.go` 唯一定义 + `testdata/` 快照 |
+| 3.4 反爬与拟人化 | `adapter/clock/waiter.go` + `adapter/page/{open,execute}.go`（自动化指纹抑制；真实点击优先、失败降级 `el.click()`，见 §9.1 W9） |
+| 3.5 selector 策略 | `internal/selector/{selector,issue,article,login}.go` 唯一定义（§8.1 定稿表）+ `testdata/` 快照 |
 | 3.6 列表解析（滚动稳定、去重、期号） | `service/issue/parse.go`、`period.go`、`scroll.go` |
 | 3.7 全文获取（两机制、拼接、50 次合计上限、最终成功判定） | `service/article/{navigate,accumulate,extract,verify}.go`（§6.2；最终判定见步骤 6） |
 | 3.8 EPUB 组装（目录名、回退 slug、sanitize、元数据、输出结构） | `service/issue/period.go`、`service/ebook/epub.go`、`adapter/storage/workspace.go` |
@@ -709,5 +852,5 @@ app 调 writer.Copy(ctx, vol, mobiPath, name)    // 覆盖同名；失败 → Er
 | 4.5 退出码与日志格式 | `cli/exit.go`、`cli/log.go`（stderr；分母为去重后篇数） |
 | 5 非目标 | §1.2/§2 明确排除；无对应模块 |
 | 6 待验证事项 | §8 末段 + `testdata/` 前置；KF7/KF8 型号确认只影响 `config.OutputProfile`（L4） |
-| 7 验收标准 1-7 | §8 集成用例逐一对应；其中"每篇正文完整"以**文末固定标识**判定，并覆盖两条路线：`余下全文` 单击即完整、`下一页` 逐页点到按钮消失 |
+| 7 验收标准 1-7 | §8 集成用例逐一对应；其中"每篇正文完整"以 §6.2 步骤 6 的**三条 DOM 事实**判定，并覆盖两条路线：`余下全文` 单击即完整、`下一页` 逐页点到按钮消失 |
 | go-rules 架构规范 | §1.3、§5、§9.1、§9.4 |
